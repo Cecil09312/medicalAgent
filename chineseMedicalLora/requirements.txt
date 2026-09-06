@@ -1,0 +1,35 @@
+# chineseMedicalLora 依赖清单
+# 安装顺序（重要）:
+#   1) 先装匹配驱动的 PyTorch（本机驱动 CUDA≤12.6 用 cu124）:
+#      pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+#          --index-url https://download.pytorch.org/whl/cu124
+#   2) 再: pip install -r requirements.txt
+# 切勿让 pip 把 torch 升到 cu128/cu130（驱动 560 不支持 CUDA 13）。
+
+# ---- 训练 ----
+# 钉死 torch，防止 unsloth 依赖把 CUDA 13 版 torch 装进来
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+# 勿装/勿保留 torchao（≥0.17 需要 torch.int1，与 2.5.1 不兼容）；本项目 QLoRA 用 bitsandbytes
+# Unsloth 需匹配本地 CUDA；若装失败可改为 git 源:
+#   pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+unsloth>=2025.1.0,<2026.8.0
+trl>=0.12.0,<0.25.0
+peft>=0.13.0,<0.20.0
+transformers>=4.45.0,<5.0.0
+datasets>=2.20.0
+accelerate>=0.34.0
+bitsandbytes>=0.43.0
+xformers==0.0.28.post3
+python-dotenv>=1.0.0
+
+# ---- 数据处理 ----
+pandas>=2.0.0
+
+# ---- 推理服务 ----
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+
+# 前端依赖 marked.js 用 CDN 引入，无需 pip。
