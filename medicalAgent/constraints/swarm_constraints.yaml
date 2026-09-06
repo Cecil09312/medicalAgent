@@ -1,0 +1,64 @@
+# Swarm 协作规则配置
+
+max_agents_per_task: 3
+timeout_seconds: 90
+
+task_decomposition_rules:
+  simple_query:
+    max_agents: 1
+    description: "简单问题，单个 Agent 即可处理"
+  
+  lifestyle_advice:
+    max_agents: 1
+    description: "生活方式建议，单个 Agent 处理"
+  
+  moderate_case:
+    min_agents: 2
+    max_agents: 3
+    description: "中等复杂度，需要 2-3 个 Agent 协作"
+  
+  complex_case:
+    min_agents: 2
+    max_agents: 5
+    description: "复杂案例，需要 2-5 个 Agent 协作"
+
+agent_selection_rules:
+  high_risk_symptoms:
+    keywords:
+      - "胸痛"
+      - "呼吸困难"
+      - "意识丧失"
+      - "严重出血"
+      - "剧烈头痛"
+    agent: diagnostic_agent
+    priority: high
+  
+  guideline_keywords:
+    keywords:
+      - "临床指南"
+      - "研究进展"
+      - "最新证据"
+      - "系统综述"
+      - "meta分析"
+    agent: research_agent
+    priority: medium
+  
+  lifestyle_keywords:
+    keywords:
+      - "饮食"
+      - "运动"
+      - "睡眠"
+      - "压力管理"
+      - "生活习惯"
+    agent: consultation_agent
+    priority: low
+
+quality_control:
+  min_confidence_score: 0.7
+  require_citations_for_medical_claims: true
+  validate_against_guidelines: true
+  
+conflict_resolution:
+  strategy: "consensus"
+  fallback: "lead_agent_decision"
+  require_unanimous_agreement: false

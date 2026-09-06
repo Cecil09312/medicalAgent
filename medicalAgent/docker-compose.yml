@@ -1,0 +1,36 @@
+# ============================================================
+# AI智能医疗诊断系统 - Docker Compose 编排
+# 一键构建并启动：docker compose up -d
+# ============================================================
+services:
+  medix-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: medix-agent:latest
+    container_name: medix-agent
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    # 加载项目根目录的 .env（包含 LLM_API_KEY 等配置）
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Shanghai
+      # HuggingFace 国内镜像
+      - HF_ENDPOINT=https://hf-mirror.com
+    volumes:
+      # 知识库持久化（含向量数据库 milvus_lite.db）
+      # 首次启动会自动初始化，后续重启直接复用
+      - ./knowledge/data:/app/knowledge/data
+      # 日志持久化
+      - ./logs:/app/logs
+      # 专家审核数据持久化
+      - ./review/data:/app/review/data
+      # 飞轮指标数据持久化
+      - ./flywheel/data:/app/flywheel/data
+      # 评估报告持久化
+      - ./evaluation/data/reports:/app/evaluation/data/reports
+    # 确保容器内时间正确
+    tty: true
+    stdin_open: true

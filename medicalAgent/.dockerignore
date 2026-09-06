@@ -1,0 +1,42 @@
+# ============================================================
+# Docker 构建排除规则
+# ============================================================
+
+# 环境配置（含密钥，不打包进镜像，通过 env_file 挂载）
+.env
+
+# Python 缓存与构建产物
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+
+# 知识库向量数据库（首次启动在容器内自动构建，或通过 volume 挂载宿主机的）
+knowledge/data/milvus_lite.db/
+
+# 运行时数据（通过 volume 持久化，不打包进镜像）
+logs/
+review/data/
+flywheel/data/
+evaluation/data/reports/
+
+# IDE / 编辑器
+.vscode/
+.idea/
+.trae/
+.claude/
+.deepeval/
+
+# 版本控制
+.git/
+.gitignore
+
+# 系统
+.DS_Store
+Thumbs.db
+*.log

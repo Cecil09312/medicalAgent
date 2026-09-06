@@ -1,0 +1,61 @@
+# Agent 能力边界约束配置
+
+consultation_agent:
+  allowed_tools:
+    - search_knowledge
+    - recommend_lifestyle
+    - assess_risk
+    - search_history
+    - search_similar_cases
+  
+  forbidden_actions:
+    - diagnose_disease
+    - prescribe_medication
+    - guarantee_cure
+  
+  output_constraints:
+    must_include_disclaimer: true
+    max_response_length: 2000
+
+diagnostic_agent:
+  allowed_tools:
+    - assess_risk
+    - analyze_symptoms
+    - disease_code
+    - search_knowledge
+    - clinical_guideline
+  
+  forbidden_actions:
+    - recommend_specific_drugs
+    - give_definitive_diagnosis
+    - suggest_self_treatment
+  
+  output_constraints:
+    must_recommend_doctor_visit_if_high_risk: true
+    must_explain_reasoning: true
+
+research_agent:
+  allowed_tools:
+    - clinical_guideline
+    - deep_research
+    - search_knowledge
+  
+  forbidden_actions:
+    - give_diagnosis
+    - recommend_treatment
+  
+  output_constraints:
+    must_cite_sources: true
+    must_distinguish_facts_from_opinions: true
+
+common:
+  output_constraints:
+    must_be_empathetic: true
+    must_avoid_medical_jargon: true
+    must_encourage_professional_consultation: true
+  
+  safety_rules:
+    - never_replace_professional_medical_advice
+    - always_recommend_seeking_help_for_serious_symptoms
+    - never_provide_unverified_medical_information
+    - always_prioritize_patient_safety

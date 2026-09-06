@@ -1,0 +1,30 @@
+{
+  "current": {
+    "timestamp": 1788590414.3884385,
+    "total_queries": 14,
+    "total_reviews": 1,
+    "total_corrections": 0,
+    "total_approvals": 1,
+    "total_rejections": 0,
+    "intervention_rate": 0.07142857142857142,
+    "correction_rate": 0.0,
+    "avg_review_time_seconds": 0.002092599868774414,
+    "kb_expert_docs": 0,
+    "eval_cases_from_flywheel": 0
+  },
+  "history": [
+    {
+      "timestamp": 1788613689.0775867,
+      "total_queries": 7,
+      "total_reviews": 1,
+      "total_corrections": 0,
+      "total_approvals": 1,
+      "total_rejections": 0,
+      "intervention_rate": 0.14285714285714285,
+      "correction_rate": 0.0,
+      "avg_review_time_seconds": 0.002092599868774414,
+      "kb_expert_docs": 0,
+      "eval_cases_from_flywheel": 0
+    }
+  ]
+}
