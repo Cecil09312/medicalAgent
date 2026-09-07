@@ -879,3 +879,211 @@ ROUTE_SIMPLE_MAX_LEN=30          # 简单问题长度阈值
 | 内容完整性 | 最终回答完整：饮食建议 6 项 + 耗时 18.51s + 免责声明，无截断、无消息重复 |
 | 状态恢复 | 流式结束后输入框/按钮正确恢复可用 |
 | 回归影响 | 标记有误、重置会话、审核采样、飞轮指标记录行为不变；py_compile 通过 |
+
+---
+
+## 10. 优化方案（2026-09-07 项目分析报告改进建议，已实施完成并验证）
+
+> 来源：项目分析报告第 7 节"潜在问题与改进建议"提出的 6 个方向，本章将其转化为可落地的实施方案。各方案相互独立、可分批实施；全部遵循本项目既有的兼容原则——**新能力默认禁用，未启用时行为与现状完全一致**。10.1-10.6 已于 2026-09-07 实施完成并通过 80 项自动化测试验证（10.5），详见 10.8 实施结果。
+
+### 10.1 医疗合规与责任边界（优先级：高）
+
+**问题**：AI 诊断涉及医疗安全，当前免责声明与高危提示属于软性提示（仅依赖 Agent Prompt 与既有免责声明正则校验），缺少"高危症状必须转人工/就医"的硬约束。误答高危急症（如胸痛、大出血）可能延误就医，存在合规与安全风险。
+
+**方案**：
+
+1. **高危症状硬约束规则**
+   - `constraints/agent_constraints.yaml` 新增"高危症状硬约束"规则：当用户问题或回答中命中高危关键词（初版清单：胸闷、胸痛、呼吸困难、咯血、大出血、意识障碍、昏迷、抽搐、剧烈头痛、药物过量、自杀倾向等，清单可配置化放入同一 YAML）时，约束级别设为 **must**（阻断级），而非现有软性校验
+   - 复用既有 `constraints/validator.py`（ConstraintValidator）执行校验；校验不通过时由 `validation/auto_fixer.py`（AutoFixer）将回答**强制改写**为"您描述的症状可能属于急症，请立即拨打 120 或前往最近的急诊科就诊"类标准话术，原回答仅作为参考附于结构化字段（不直接展示给用户）
+2. **高危强制实时审核**
+   - 高危关键词命中时强制走实时（阻塞）专家审核，复用 `review/review_trigger.py` 既有的 `high_risk` 触发原因，不新增触发机制
+3. **前端免责声明固定展示**
+   - `web/chat_tab.py` 对话页顶部固定展示免责声明横幅（"本系统提供的信息不构成医疗诊断建议，不能替代执业医师诊疗"），不随对话滚动消失
+
+**预期**：高危急症场景下用户必然收到"立即就医"引导，且必须有专家介入；普通咨询行为不变。
+
+**验证方式**：
+- 输入"我父亲突然胸口剧痛伴呼吸困难"→ 回答为标准就医引导话术，审核页出现 high_risk 实时审核记录
+- 输入普通咨询问题 → 行为与现状一致，无新增审核延迟
+- 免责声明横幅在对话页始终可见
+
+### 10.2 模型路由准确率提升（优先级：中）
+
+**问题**：`core/model_router.py` 的 `is_simple_question()` 仅靠"长度阈值（默认 30）+ 复杂关键词黑名单"判断，处于临界区间的问题（短但复杂、长但简单）存在误判，误路由到大模型浪费成本、误路由到小模型损失质量。
+
+**方案**：分级路由策略，不替换现有启发式：
+
+1. **第一级（保留现状）**：现有启发式快速判定，明确简单（短且无复杂词）与明确复杂（含研究/分析/比较等关键词）的问题直接路由，零额外成本
+2. **第二级（新增，可选）**：仅对**临界问题**（如长度落在 15~60 区间且不含复杂关键词）发起一次小模型轻量意图分类调用（单轮、限定输出 `simple|complex`），按分类结果路由
+   - 环境变量 `ROUTE_LLM_CLASSIFY_ENABLED`（默认 `false`）与 `ROUTE_LLM_BOUNDARY_MIN/MAX`（默认 15/60）控制，未启用时行为与现状完全一致
+   - 分类失败（超时/异常）时回退第一级启发式结果，不阻断主流程
+3. **路由可观测**：每次路由判定输出日志（问题摘要 + 判定级别 + 最终路由 + 触发原因），便于后续统计误判率并迭代阈值
+
+**预期**：临界问题路由准确率提升；启用分类后单次提问最多增加一次小模型调用（约 1 秒内）；默认关闭时零影响。
+
+**验证方式**：
+- 构造 20 条临界问题集（人工标注 simple/complex），对比启用前后的路由一致率
+- 关闭开关 → 路由日志与现状完全一致
+- 分类接口异常（模拟超时）→ 回退启发式，回答不中断
+
+### 10.3 知识库多源导入与更新机制（优先级：中）
+
+**问题**：知识库依赖 `knowledge/data/documents` 内置静态 txt 语料，量少且无更新流程，缺少权威医学资料（临床指南、文献）的自动入库机制，长期会导致检索质量受限、知识陈旧。
+
+**方案**：新增统一入库管道 `knowledge/importer.py`：
+
+1. **多格式解析**：支持 txt / markdown / pdf（复用 requirements 中已有的 pypdf），统一走既有 chunk（500/overlap 50）与 `_embed()` 入库链路，入库参数复用 milvus_kb 既有配置
+2. **文档源清单管理**：新增 `knowledge/data/sources.yaml` 文档源清单，每个条目记录：来源名称、文件路径/URL、权威等级（指南/教材/科普）、版本与更新日期等元数据；元数据随 chunk 一并写入 Milvus 字段，检索结果可标注出处
+3. **增量入库**：按文件内容 hash 去重，重复文档跳过，变更文档先删旧 chunk 再入库；提供 CLI 入口（`python -m knowledge.importer --sync`）
+4. **入库质量门禁**：每次入库后自动抽样运行 `evaluation/rag_eval`，检索质量（相关性命中率）低于阈值时告警并暂停启用新语料（新 chunk 打标 `pending`，告警人工确认后转正）
+
+**预期**：新增权威指南文档 30 分钟内完成解析、入库与质量验证；重复入库零冗余；检索结果可溯源。
+
+**验证方式**：
+- 放入一份新 PDF 指南 → `--sync` 后检索相关症状能命中该指南内容且标注出处
+- 重复执行 `--sync` → 全部跳过，无重复 chunk
+- 故意放入低质量文档 → rag_eval 抽样告警，新 chunk 处于 pending 不参与检索
+
+### 10.4 飞轮指标维度下钻（优先级：中）
+
+**问题**：`flywheel/metrics_tracker.py` 仅统计整体专家介入率、修正率等指标，无法定位薄弱环节——不知道哪类疾病、哪个 Skill、哪个 Agent 出错最多，飞轮改进缺少靶向依据。
+
+**方案**：
+
+1. **维度字段扩展**：指标记录结构（`record_*` 系列）新增可选维度字段：`disease_category`（疾病类别，可由 disease-code Skill 或关键词粗分类）、`skill_name`（本次回答实际调用的 Skill）、`agent_type`（咨询/诊断/研究）；字段缺省为 `unknown`，写入端（swarm_coordinator / review_queue）在既有记录点顺带填充，不新增采集链路
+2. **聚合统计**：metrics_tracker 新增按维度聚合接口（各维度的介入率、修正率、平均审核耗时 Top-N）
+3. **仪表盘下钻视图**：`web/metrics_tab.py` 飞轮指标仪表盘新增按维度聚合表格（"修正率最高的疾病类别 Top 10"、"被修正最多的 Skill"），辅助定位薄弱环节
+4. **历史数据兼容**：旧记录无维度字段按 `unknown` 聚合，不迁移、不报错
+
+**预期**：能直接回答"哪类问题最常被专家修正"，为知识库增强（kb_enhancer）与 Prompt 优化（prompt_optimizer）提供靶向输入。
+
+**验证方式**：
+- 制造多轮含 Skill 调用与专家修正的对话 → 仪表盘维度聚合表数据正确
+- 仅有旧数据启动 → 聚合表正常显示（unknown 行），无报错
+- 指标 JSON 持久化格式向后兼容，旧文件可直接加载
+
+### 10.5 测试体系补齐（优先级：高）
+
+**问题**：测试仅集中在 `examples/test_all.py`（依赖真实 LLM API 的端到端冒烟脚本），无单元/集成测试体系，回归成本高：每次改动（如第 6-9 章优化）只能靠手工验证，模型路由、熔断器、约束校验等纯逻辑模块完全无覆盖。
+
+**方案**：新建 `tests/` 目录，与 examples 分工（examples 保留真实 API 冒烟，tests 面向 CI 可重复运行）：
+
+1. **单元测试**（不依赖外部服务，monkeypatch/mock LLM 客户端）：
+   - `tests/test_model_router.py`：`is_simple_question()` 边界用例（空文本、超长、复杂关键词、临界长度）、contextvar 路由继承
+   - `tests/test_circuit_breaker.py`：三态状态机迁移（CLOSED→OPEN→HALF_OPEN→CLOSED）、阈值/冷却/成功重置、按模型名单例
+   - `tests/test_constraint_validator.py`：各约束规则命中/未命中、AutoFixer 改写
+   - `tests/test_review_queue.py`：入队、状态流转、原子写入持久化
+2. **集成回归测试**（mock LLM 返回固定脚本）：`tests/test_swarm_pipeline.py` 覆盖 Swarm 编排主链路——简单问题单 Agent 路径、复杂问题分解并行路径、全 Worker 失败兜底、异常统一兜底（覆盖第 7 章各兜底项）
+3. **医疗场景回归用例集**：`tests/cases/medical_regression.yaml` 固化 20+ 真实医疗问答场景（含高危症状场景，联动 10.1 验证），并将飞轮沉淀的评估用例（eval_expander 产物）定期导入该用例集
+4. **工程化**：requirements.txt 增加 `pytest` 与 `pytest-asyncio`；提供 `pytest tests/ -v` 运行命令；单元测试目标耗时 < 30 秒
+
+**预期**：核心纯逻辑模块 100% 用例覆盖，主链路改动可一键回归；高危场景进入自动化回归。
+
+**验证方式**：
+- `pytest tests/ -v` 全绿，耗时 < 30 秒，无需真实 API Key
+- 人为在 model_router 引入 bug → 对应单元测试失败
+- 第 6-9 章已实施的兜底行为均有对应集成断言
+
+### 10.6 配置统一校验（优先级：低）
+
+**问题**：`.env` 配置项多（LLM 主/小模型、熔断、路由、Milvus、Mem0、Redis 等，见第 8.2 节），各模块分散读取、静默回退默认值，误配置（如填错 Key、漏填依赖项）只在运行期以隐蔽方式暴露，排障成本高。
+
+**方案**：新增 `core/config.py` 集中配置管理：
+
+1. **pydantic Settings 统一建模**：将散落在各模块的 `os.getenv` 收敛为单一 Settings 类（llm、llm_small、circuit_breaker、route、milvus、memory 等分组），各模块改为从 Settings 读取（保持字段名与现有 .env 变量名不变，零迁移成本）
+2. **启动时统一校验**：main.py 启动入口调用校验，输出可读错误清单，例如：
+   - 缺失必填项：`LLM_API_KEY 未配置`
+   - 冲突项：`ROUTE_LLM_CLASSIFY_ENABLED=true 但 LLM_SMALL_MODEL_NAME 为空`
+   - 格式错误：`CIRCUIT_COOLDOWN_SECONDS=abc 不是有效整数`
+   - 校验失败时快速失败（明确报错退出），替代现在的静默回退
+3. **生效配置摘要**：启动时打印脱敏配置摘要（Key 仅显示前 4 位 + ***），方便确认运行环境
+4. **渐进式收敛**：config.py 先只做"启动校验 + 摘要"（只读 .env，不改各模块读取逻辑），模块级迁移作为后续低风险重构分批进行
+
+**预期**：误配置在启动 1 秒内以人话报错，而非运行期隐蔽故障；配置项一处可查。
+
+**验证方式**：
+- 清空 LLM_API_KEY 启动 → 明确报错"LLM_API_KEY 未配置"并退出
+- 填入非法数字配置 → 启动时报格式错误
+- 正常配置启动 → 打印脱敏摘要，系统行为与现状一致
+
+### 10.7 实施优先级与依赖关系
+
+| 优先级 | 方案 | 依赖 | 预估工作量 |
+|--------|------|------|-----------|
+| P0（高） | 10.1 医疗合规硬约束 | 无，复用既有 ConstraintValidator / review_trigger | 1-2 天 |
+| P0（高） | 10.5 测试体系补齐 | 10.1 的回归验证建议在测试完成后补充高危用例 | 2-3 天 |
+| P1（中） | 10.2 路由准确率提升 | 无（可选启用小模型分类） | 1 天 |
+| P1（中） | 10.3 知识库导入更新 | 无，复用 pypdf 与 rag_eval | 2-3 天 |
+| P1（中） | 10.4 飞轮维度下钻 | 建议在 10.5 之后实施，聚合逻辑可同步获得测试覆盖 | 1-2 天 |
+| P2（低） | 10.6 配置统一校验 | 无，建议最后实施以覆盖前述新增配置项 | 1-2 天 |
+
+实施原则：
+- 各方案相互独立，可单独立项实施与验证
+- 全部遵循"默认禁用 / 未启用时行为与现状完全一致"的兼容原则（同第 8 章）
+- 每项实施完成后按第 7-9 章惯例在本章追加"实施与验证结果"小节
+
+### 10.8 实施与验证结果（2026-09-07 已完成）
+
+全部 6 项方案已实施，验证方式：`pytest tests/ -v`（80 项测试，耗时 < 1 秒，无需真实 API Key）、全量 py_compile、`import main` 与 Web 组件冒烟。
+
+| 方案 | 实施位置 | 要点 |
+|------|---------|------|
+| 10.1 合规硬约束 | `constraints/agent_constraints.yaml`（emergency_constraints 段：16 个高危关键词 + 就医引导判定正则，均可配置）、`constraints/emergency.py`（新增：detect_emergency / has_urgent_care_guidance / emergency_response）、`constraints/validator.py`（validate_output 前置阻断级校验，对未配置约束的 Agent 同样生效）、`validation/auto_fixer.py`（emergency_guidance 强制改写）、`review/review_trigger.py`（条件 0：问题命中高危关键词 → 强制实时审核，复用 high_risk 原因；agent_loop 已传入 question）、`swarm/swarm_coordinator.py`（process 出口：高危问题且回答无就医引导且未经专家修正时，answer 强制替换为标准就医话术，原文保留在 reference_answer 字段）、`web/chat_tab.py`（对话页顶部固定免责声明横幅；高危检测统一走 emergency.py 配置） | 高危问题必然收到"立即拨打 120 / 急诊"引导；实时审核由 AgentLoop 强制触发，协调器只做兜底改写，不重复阻塞 |
+| 10.2 路由二级分类 | `core/model_router.py`（新增 is_boundary_question / _classify_by_llm / classify_question：临界区间默认 15~60 字，小模型单轮分类限输出 simple/complex，5 秒超时；直接构建独立 AsyncOpenAI 客户端，不计入熔断器）、`swarm/swarm_coordinator.py`（process 入口改用 classify_question） | 环境变量 `ROUTE_LLM_CLASSIFY_ENABLED` 默认 false；关闭/失败/未配置小模型时行为与现状完全一致（测试覆盖三种回退路径） |
+| 10.3 知识库导入管道 | `knowledge/importer.py`（新增：sources.yaml 清单解析、txt/md/pdf 解析、MD5 增量去重、删旧入库、入库后检索验证；CLI `python -m knowledge.importer --sync / --list`）、`knowledge/data/sources.yaml`（新增：清单模板含权威等级/版本元数据，默认条目 enabled=false）、`knowledge/milvus_kb.py`（新增 delete_by_source）、`knowledge/__init__.py`（MedicalKnowledgeBase 改懒加载，importer 与测试不再连带加载 pymilvus/嵌入模型） | 与方案的偏差：入库质量门禁未引入 LLM 评估（会引入 deepeval+LLM 依赖），改为"检索验证"——入库后用首个分块做语义检索，确认新语料可命中，未命中输出告警；pending 标记机制暂缓 |
+| 10.4 飞轮维度下钻 | `flywheel/dimensions.py`（新增：9 类疾病关键词粗分类、build_review_dimensions、top_dimensions）、`flywheel/metrics_tracker.py`（维度统计随 record_review/approval/correction/rejection 可选传入，持久化于指标 JSON 的 dimensions 字段，get_dimension_breakdown 下钻接口）、`review/review_queue.py`（ReviewItem 增加 dimensions 字段，实时/异步入队透传，旧数据兼容 None）、`core/agent_loop.py`（结果附 skills_used）、`swarm/swarm_coordinator.py`（process 出口附加 review_dimensions）、`web/metrics_tab.py`（新增"维度下钻"区：按疾病类别/Skill/Agent 的审核数/修正数/修正率表，修正数降序 Top 10） | 维度缺失按 unknown 聚合，旧指标文件与旧审核记录直接兼容（均有测试覆盖） |
+| 10.5 测试体系 | `tests/`（新增 10 个测试文件 + conftest.py，共 84 项）、`pytest.ini`（asyncio_mode=auto）、`requirements.txt`（pytest / pytest-asyncio） | 覆盖：model_router 启发式/contextvar/边界/分类回退、circuit_breaker 三态全迁移、validator 软+硬约束、emergency 检测与强制审核、AgentLoop 集成（高危强制审核/专家实时修正替换回答/skills_used/普通问题不审核，stub LLM 无真实 API）、review_queue 流程/实时唤醒/维度/持久化/旧格式、metrics 维度聚合/持久化/旧格式、Swarm 主链路兜底（全 Worker 失败/系统异常/硬约束改写/含引导不改写/普通问题不变）、importer 解析/hash 去重/缺文件/清单状态/缺 pymilvus 降级、config 校验规则。真实 LLM 冒烟仍由 examples/test_all.py 承担 |
+| 10.6 配置统一校验 | `core/config.py`（新增：validate_config 校验必填/数值/布尔/逻辑冲突/边界，print_config_summary 脱敏摘要——Key 仅显示前 4 位）、`main.py`（启动入口接入：校验失败以可读清单退出，通过则打印摘要）、`.env.example`（补充 ROUTE_LLM_CLASSIFY_ENABLED / ROUTE_LLM_BOUNDARY_MIN/MAX 说明） | 校验项：LLM_API_KEY 必填、10 个数值项格式、3 个布尔项格式、`开启二级分类但未配小模型` 冲突、临界区间 min<max。渐进式第一步：只读校验，各模块 getenv 逻辑未动 |
+
+实测结果：
+- `pytest tests/`：84 passed，约 1.2 秒，无外部依赖；连跑两轮真实数据文件（审核队列/飞轮指标）MD5 不变（测试隔离完备）
+- 全量 py_compile 通过；`import main`、Web 三 Tab 完整构建（`create_app()`）冒烟通过
+- 端到端链路实测（stub LLM）：高危问题 → AgentLoop 强制实时审核（超时转异步）→ Agent 层自动补免责声明 → 协调器硬约束改写为"拨打 120"话术且原文保留在 reference_answer → 维度信息附加；专家在审核窗口内提交修正 → 回答被替换为专家修正内容；已含就医引导的高危回答与普通问题回答均不被误改
+- `python main.py --cli`（无 Key）：可读错误"LLM_API_KEY 未配置"并退出码 1（旧行为是提问时隐晦报错）；配置占位 Key 后正常进入交互并打印脱敏摘要（Key 显示 sk-v***）
+- `python -m knowledge.importer --list` 清单状态正确；本机未安装 pymilvus 时 `--sync` 对 enabled 条目返回明确的 failed 报告而非崩溃（真实 Milvus 入库需在依赖齐全的环境执行）
+- 存量数据向后兼容：真实 review/data/pending_reviews.json（6 条旧记录）与 flywheel/data/flywheel_metrics.json（旧格式无 dimensions 字段）经新代码加载正常，旧记录按 unknown 维度聚合
+- 行为兼容性：未配置小模型/未开启新开关时，路由、审核、飞轮、前端行为与实施前一致（回归测试断言覆盖）
+
+验证过程中的附带修复（2026-09-07）：
+1. **Gradio 6.x 兼容**：本机 gradio 6.26 已移除 `Chatbot(type=...)`/`show_copy_button` 参数，导致 `create_app()` 构建失败（属既有代码与新版 gradio 的不兼容）。`web/chat_tab.py` 改为按构造签名过滤参数，4.x-6.x 均可构建。遗留已知项：gradio 6 将 theme/css/js 迁至 launch()，当前仅产生警告、不影响功能，样式主题如需完全生效需后续调整 `web/app.py`
+2. **测试数据隔离加固**：`tests/test_review_queue.py` 中触发专家批准的用例原先会经进程级指标单例把测试数据写入真实 flywheel_metrics.json，已改为模块级 autouse 隔离，并将被污染的真实数据文件还原至 HEAD 版本（恢复后 reviews=1/approvals=1，与提交一致）
+
+---
+
+## 11. 短期记忆 Redis 持久化接入与过期策略（2026-09-07，已实施完成并验证）
+
+### 11.1 背景与问题
+
+对短期记忆 Redis 持久化功能实测（16 项断言全过，功能本身正常）后发现两个接入层问题：
+
+| # | 问题 | 影响 |
+|---|------|------|
+| 1 | Redis 后端只能通过构造函数 `ShortTermMemory(backend="redis")` 启用，主链路（chat_tab / examples）均为无参构造，`.env` 中无后端开关 | 配好 REDIS_HOST/PORT/DB 也切不到 Redis，功能实际不可达 |
+| 2 | Redis 会话键 `stm:*` 写入无 TTL，且 Web 端"重置会话"仅更换 session_id 不清理旧键 | 长期运行会话键无限累积（泄漏式增长） |
+
+### 11.2 实施方案
+
+| 项 | 实施位置 | 内容 |
+|----|---------|------|
+| 后端环境变量开关 | `memory/short_term.py` | 构造参数 `backend` 改为可选（None），缺省读取 `MEMORY_BACKEND`（默认 memory）；主链路无参构造即可由 .env 切换。`__init__` 按解析后的 `self.backend` 判断是否初始化 Redis |
+| 会话键滑动过期 | `memory/short_term.py` | 新增 `_redis_set()` 统一写入：`STM_SESSION_TTL_SECONDS`（默认 86400 秒=24 小时，0=永不过期）；每次追加消息刷新 TTL，活跃会话不过期、闲置会话自动回收 |
+| 重置会话清理 | `web/chat_tab.py` `_reset_session()` | 更换 session_id 前调用 `clear_session(旧id)`，memory/redis 两后端统一释放旧会话数据（失败仅告警不影响重置） |
+| 配置校验与摘要 | `core/config.py` | `MEMORY_BACKEND` 取值校验（memory/redis）、`STM_SESSION_TTL_SECONDS` 非负校验、`REDIS_PORT/DB` 数值校验；摘要新增"短期记忆后端 + TTL"行 |
+| 配置模板 | `.env.example` | Redis 段补充 `MEMORY_BACKEND` / `STM_SESSION_TTL_SECONDS` 说明 |
+| 单元测试 | `tests/test_short_term_memory.py`（13 项） | FakeRedis 桩验证：后端选择（默认/env/显式传参优先级）、读写与 OpenAI 格式、TTL 传递与 0=永不过期、跨实例持久化、clear、会话列举、不可达回退 memory |
+
+### 11.3 实施与验证结果（本机真实 Redis，db 15 隔离）
+
+| 验证点 | 实测结果 |
+|--------|---------|
+| MEMORY_BACKEND=redis 无参构造 | 主链路同款构造方式，backend=redis 且真实连接建立，写入落到 `stm:*` 键 |
+| TTL 生效 | 写入后 `TTL=3600`（测试配 1 小时）；闲置 2 秒 TTL 递减，追加消息后重置回满（滑动过期确认） |
+| 重置会话清理 | `_reset_session()` 后旧 session 的 stm 键从 Redis 消失，session_id 更换 |
+| 跨进程持久化 | 新进程读回全部历史（含 TTL 继续倒计时） |
+| 回退 | 连接不可达端口（127.0.0.1:1）时 backend 回退 memory，读写正常不中断 |
+| 数据安全 | 测试全程 db 15 隔离，结束后键清空，db 0 与真实业务数据零污染 |
+| 全量回归 | `pytest tests/` 98 passed（含新增 13 项记忆测试） |
+
+### 11.4 实施中发现并修复的缺陷
+
+**环境变量后端初始化失效（已修复）**：首轮实施将构造参数默认值改为 None 后，`__init__` 内仍以构造参数（而非解析后的 `self.backend`）判断是否执行 `_init_redis`——`MEMORY_BACKEND=redis` 时 backend 字符串为 redis 但 Redis 客户端为 None，数据静默落入进程内存且无任何报错（单测因手动注入客户端未拦截，实机验证拦截）。已修复判断依据，并补回归测试 `test_env_backend_redis_actually_inits_connection`（用不可达端口断言环境变量路径真正执行了连接初始化与失败回退）。

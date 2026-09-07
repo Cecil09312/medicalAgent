@@ -26,6 +26,8 @@ class ReviewItem:
     expert_id: Optional[str] = None
     created_at: float = 0.0
     reviewed_at: Optional[float] = None
+    # 维度信息（飞轮指标下钻用）：disease_category / skill_name / agent_type，旧数据可能缺失
+    dimensions: Optional[Dict[str, str]] = None
 
     def __post_init__(self):
         if self.created_at == 0.0:
@@ -103,6 +105,7 @@ class ReviewQueue:
         answer: str,
         trigger_reason: str,
         review_mode: str,
+        dimensions: Optional[Dict[str, str]] = None,
     ) -> ReviewItem:
         """创建审核项"""
         item = ReviewItem(
@@ -111,6 +114,7 @@ class ReviewQueue:
             original_answer=answer,
             trigger_reason=trigger_reason,
             review_mode=review_mode,
+            dimensions=dimensions,
         )
         self._items[item.id] = item
         self._save()
@@ -122,6 +126,7 @@ class ReviewQueue:
         answer: str,
         trigger_reason: str,
         timeout: Optional[int] = None,
+        dimensions: Optional[Dict[str, str]] = None,
     ) -> ReviewResult:
         """
         实时审核：阻塞等待专家审核结果
@@ -131,6 +136,7 @@ class ReviewQueue:
             answer: 原始回答
             trigger_reason: 触发原因
             timeout: 超时秒数（默认从 .env 读取）
+            dimensions: 维度信息（飞轮指标下钻用，可选）
 
         Returns:
             审核结果
@@ -139,7 +145,7 @@ class ReviewQueue:
             # 默认 15 秒：专家实时审核的合理响应窗口，避免无人审核时长时间阻塞回答
             timeout = int(os.getenv("REVIEW_REALTIME_TIMEOUT", "15"))
 
-        item = self._create_item(question, answer, trigger_reason, "realtime")
+        item = self._create_item(question, answer, trigger_reason, "realtime", dimensions=dimensions)
 
         # 创建等待事件，并记录所属事件循环（专家审核可能在其他线程触发）
         event = asyncio.Event()
@@ -175,6 +181,7 @@ class ReviewQueue:
         question: str,
         answer: str,
         trigger_reason: str,
+        dimensions: Optional[Dict[str, str]] = None,
     ) -> str:
         """
         异步审核：入队，返回 review_id
@@ -183,11 +190,12 @@ class ReviewQueue:
             question: 用户问题
             answer: 原始回答
             trigger_reason: 触发原因
+            dimensions: 维度信息（飞轮指标下钻用，可选）
 
         Returns:
             review_id
         """
-        item = self._create_item(question, answer, trigger_reason, "async")
+        item = self._create_item(question, answer, trigger_reason, "async", dimensions=dimensions)
         logger.info(f"异步审核已入队 [review_id={item.id}, reason={trigger_reason}]")
         return item.id
 
@@ -201,13 +209,13 @@ class ReviewQueue:
             from flywheel.metrics_tracker import get_default_metrics
             metrics = get_default_metrics()
             review_time = max(0.0, item.reviewed_at - item.created_at)
-            metrics.record_review(review_time)
+            metrics.record_review(review_time, dimensions=item.dimensions)
             if action == "approved":
-                metrics.record_approval()
+                metrics.record_approval(dimensions=item.dimensions)
             elif action == "corrected":
-                metrics.record_correction()
+                metrics.record_correction(dimensions=item.dimensions)
             elif action == "rejected":
-                metrics.record_rejection()
+                metrics.record_rejection(dimensions=item.dimensions)
         except Exception as e:
             logger.warning(f"飞轮指标记录失败: {e}")
 

@@ -242,6 +242,44 @@ def _build_trend_data():
         return None
 
 
+_DIMENSION_LABELS = {
+    "disease_category": "疾病类别",
+    "skill_name": "触发 Skill",
+    "agent_type": "Agent 类型",
+}
+
+
+def _build_dimension_markdown() -> str:
+    """构建维度下钻表（按疾病类别 / Skill / Agent 聚合，修正数降序 Top 10）"""
+    metrics = _get_metrics()
+    if metrics is None:
+        return ""
+
+    try:
+        sections = []
+        for dim, label in _DIMENSION_LABELS.items():
+            rows = metrics.get_dimension_breakdown(dim, top_n=10)
+            # 仅展示该维度有审核数据的取值；无数据时显示占位说明
+            if not rows:
+                sections.append(f"**{label}**：暂无审核数据（数据将随专家审核自动积累）\n")
+                continue
+            lines = [
+                f"**{label}**（按修正数降序，定位薄弱环节）\n",
+                "| 取值 | 审核数 | 修正数 | 修正率 |",
+                "|------|--------|--------|--------|",
+            ]
+            for value, reviews, corrections, rate in rows:
+                lines.append(f"| {value} | {reviews} | {corrections} | {rate:.1%} |")
+            sections.append("\n".join(lines) + "\n")
+
+        if all("暂无审核数据" in s for s in sections):
+            return "暂无维度数据。专家审核若干回答后，此处将按疾病类别 / Skill / Agent 展示修正率下钻。"
+        return "\n".join(sections)
+    except Exception as e:
+        logger.warning(f"构建维度下钻表失败: {e}")
+        return ""
+
+
 def _refresh_metrics():
     """刷新展示（同步队列数据，但不拍摄快照；快照由定时器负责）"""
     _sync_metrics()
@@ -249,6 +287,7 @@ def _refresh_metrics():
         _build_metrics_markdown(),
         _build_history_table(),
         _build_trend_data(),
+        _build_dimension_markdown(),
     )
 
 
@@ -261,6 +300,7 @@ def _auto_snapshot_and_refresh():
         _build_metrics_markdown(),
         _build_history_table(),
         _build_trend_data(),
+        _build_dimension_markdown(),
     )
 
 
@@ -285,16 +325,20 @@ def create_metrics_tab():
         interactive=False,
     )
 
+    # 维度下钻（按疾病类别 / Skill / Agent 聚合，定位薄弱环节）
+    gr.Markdown("##### 🔍 维度下钻")
+    dimension_md = gr.Markdown(value=_build_dimension_markdown, elem_classes="medix-card")
+
     # 刷新按钮：仅刷新展示，不产生历史快照
     refresh_btn = gr.Button("🔄 刷新指标", variant="primary")
     refresh_btn.click(
         _refresh_metrics,
-        outputs=[metrics_md, history_table, trend_plot],
+        outputs=[metrics_md, history_table, trend_plot, dimension_md],
     )
 
     # 定时器：每 60 秒自动同步一次，数据有变化才拍摄历史快照
     timer = gr.Timer(SNAPSHOT_INTERVAL_SECONDS)
     timer.tick(
         _auto_snapshot_and_refresh,
-        outputs=[metrics_md, history_table, trend_plot],
+        outputs=[metrics_md, history_table, trend_plot, dimension_md],
     )

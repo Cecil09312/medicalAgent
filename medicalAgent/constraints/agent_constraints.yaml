@@ -1,5 +1,36 @@
 # Agent 能力边界约束配置
 
+# 医疗安全硬约束（阻断级）：命中高危关键词的问题/回答必须包含紧急就医引导，
+# 否则由 ConstraintValidator 判定违规、AutoFixer 强制改写
+emergency_constraints:
+  hard_constraint: true
+  # 高危症状关键词：命中任一即触发硬约束
+  keywords:
+    - 胸闷
+    - 胸痛
+    - 呼吸困难
+    - 咯血
+    - 大出血
+    - 意识障碍
+    - 昏迷
+    - 抽搐
+    - 剧烈头痛
+    - 药物过量
+    - 自杀
+    - 休克
+    - 中毒
+    - 窒息
+    - 心脏骤停
+    - 中风
+  # 判定"已包含紧急就医引导"的正则模式（命中任一即视为满足）
+  urgent_care_patterns:
+    - "立即.*就医"
+    - "拨打.*120"
+    - "急救电话"
+    - "急诊"
+    - "尽快.*医院"
+    - "寻求.*医疗帮助"
+
 consultation_agent:
   allowed_tools:
     - search_knowledge

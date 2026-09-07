@@ -47,6 +47,9 @@ _RE_FORBIDDEN_PATTERNS = {
 }
 
 
+from constraints.emergency import detect_emergency, has_urgent_care_guidance
+
+
 class ConstraintValidator:
     """约束验证器"""
 
@@ -124,12 +127,22 @@ class ConstraintValidator:
         """
         agent_config = self.agent_constraints.get(agent_id)
         if not agent_config:
-            return {"valid": True, "violations": [], "auto_fixable": []}
-        
+            agent_config = {}
+
         output_constraints = agent_config.get("output_constraints", {})
         violations = []
         auto_fixable = []
-        
+
+        # 医疗安全硬约束（阻断级，对所有 Agent 生效，含未配置约束的 Agent）：
+        # 回答命中高危症状关键词时必须包含紧急就医引导，否则判定违规并强制修复。
+        # 该检查放在软性约束之前，保证硬约束优先级最高
+        emergency_config = self.agent_constraints.get("emergency_constraints") or {}
+        if emergency_config.get("hard_constraint"):
+            matched_keyword = detect_emergency(output)
+            if matched_keyword and not has_urgent_care_guidance(output):
+                violations.append("missing_emergency_guidance")
+                auto_fixable.append("emergency_guidance")
+
         # 检查免责声明（使用模块级预编译正则，匹配逻辑与原实现完全一致）
         if output_constraints.get("must_include_disclaimer"):
             has_disclaimer = any(p.search(output) for p in _RE_DISCLAIMER_PATTERNS)

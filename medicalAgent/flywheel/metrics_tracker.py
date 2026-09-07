@@ -6,9 +6,12 @@ import os
 import time
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field, asdict
 from loguru import logger
+
+# 支持的统计维度（维度取值缺省按 unknown 聚合，与旧数据口径一致）
+DIMENSION_FIELDS = ("disease_category", "skill_name", "agent_type")
 
 
 @dataclass
@@ -49,6 +52,10 @@ class FlywheelMetrics:
         self._history: List[FlywheelSnapshot] = []
         self._current = FlywheelSnapshot()
         self._review_times: List[float] = []
+        # 维度统计：{dimension: {value: {"reviews": n, "corrections": n, "approvals": n, "rejections": n}}}
+        self._dimension_stats: Dict[str, Dict[str, Dict[str, int]]] = {
+            d: {} for d in DIMENSION_FIELDS
+        }
 
         self._load()
 
@@ -59,12 +66,18 @@ class FlywheelMetrics:
                 with open(self._metrics_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict):
-                    # 新格式：{"current": 当前累计, "history": 历史快照}
+                    # 新格式：{"current": 当前累计, "history": 历史快照, "dimensions": 维度统计}
                     self._history = [FlywheelSnapshot(**s) for s in data.get("history", [])]
                     if data.get("current"):
                         self._current = FlywheelSnapshot(**data["current"])
                     elif self._history:
                         self._current = self._history[-1]
+                    # 维度统计（旧文件无此字段时保持空表，不影响加载）
+                    for dim, values in (data.get("dimensions") or {}).items():
+                        if dim in self._dimension_stats:
+                            self._dimension_stats[dim] = {
+                                str(k): dict(v) for k, v in values.items()
+                            }
                 else:
                     # 旧格式：纯历史快照列表
                     self._history = [FlywheelSnapshot(**s) for s in data]
@@ -80,6 +93,7 @@ class FlywheelMetrics:
             data = {
                 "current": asdict(self._current),
                 "history": [asdict(s) for s in self._history],
+                "dimensions": self._dimension_stats,
             }
             # 原子写入：先写同目录临时文件，写完成功后用 os.replace 原子替换目标文件，
             # 防止写入中途进程崩溃留下损坏的 JSON，导致下次启动 _load() 解析失败
@@ -96,31 +110,67 @@ class FlywheelMetrics:
                 except Exception as cleanup_error:
                     logger.warning(f"清理飞轮指标临时文件失败: {cleanup_error}")
 
+    # ---------------- 维度统计（飞轮下钻） ----------------
+
+    def _bump_dimension(self, dimensions: Optional[Dict[str, str]], counter: str):
+        """按维度累加指定计数器（维度缺失字段按 unknown 聚合；异常不影响主流程）"""
+        try:
+            if dimensions is None:
+                dimensions = {}
+            for dim in DIMENSION_FIELDS:
+                value = (dimensions.get(dim) or "unknown").strip() or "unknown"
+                bucket = self._dimension_stats[dim].setdefault(
+                    value, {"reviews": 0, "corrections": 0, "approvals": 0, "rejections": 0}
+                )
+                bucket[counter] = bucket.get(counter, 0) + 1
+        except Exception as e:
+            logger.warning(f"飞轮维度统计失败: {e}")
+
+    def get_dimension_breakdown(self, dimension: str, top_n: int = 10) -> List[Tuple[str, int, int, float]]:
+        """
+        获取指定维度的下钻统计（按修正数降序）
+
+        Args:
+            dimension: 维度名（disease_category / skill_name / agent_type）
+            top_n: 返回条数上限
+
+        Returns:
+            [(维度取值, 审核数, 修正数, 修正率)] 列表
+        """
+        from flywheel.dimensions import top_dimensions
+        return top_dimensions(self._dimension_stats, dimension, top_n)
+
+    # ---------------- 记录接口 ----------------
+
     def record_query(self):
         """记录一次查询"""
         self._current.total_queries += 1
         self._recalculate()
 
-    def record_review(self, review_time_seconds: float = 0.0):
-        """记录一次审核"""
+    def record_review(self, review_time_seconds: float = 0.0, dimensions: Optional[Dict[str, str]] = None):
+        """记录一次审核（dimensions: 可选维度信息，用于下钻统计）"""
         self._current.total_reviews += 1
         if review_time_seconds > 0:
             self._review_times.append(review_time_seconds)
+        self._bump_dimension(dimensions, "reviews")
         self._recalculate()
 
-    def record_correction(self):
+    def record_correction(self, dimensions: Optional[Dict[str, str]] = None):
         """记录一次修正"""
         self._current.total_corrections += 1
+        self._bump_dimension(dimensions, "corrections")
         self._recalculate()
 
-    def record_approval(self):
+    def record_approval(self, dimensions: Optional[Dict[str, str]] = None):
         """记录一次批准"""
         self._current.total_approvals += 1
+        self._bump_dimension(dimensions, "approvals")
         self._recalculate()
 
-    def record_rejection(self):
+    def record_rejection(self, dimensions: Optional[Dict[str, str]] = None):
         """记录一次拒绝"""
         self._current.total_rejections += 1
+        self._bump_dimension(dimensions, "rejections")
         self._recalculate()
 
     def record_kb_ingest(self, doc_count: int = 1):

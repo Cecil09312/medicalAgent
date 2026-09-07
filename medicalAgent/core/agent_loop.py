@@ -78,6 +78,8 @@ class AgentLoop:
         )
 
         self.tool_call_count = 0
+        # 本次运行实际调用过的 Skill 名单（用于飞轮维度统计与审核维度记录）
+        used_tools: List[str] = []
 
         logger.info(f"Starting Agent Loop for {agent.agent_id}, task_id={task_id}")
 
@@ -170,6 +172,8 @@ class AgentLoop:
 
                         for tool_call in llm_response.tool_calls:
                             self.tool_call_count += 1
+                            if tool_call.name not in used_tools:
+                                used_tools.append(tool_call.name)
                             logger.debug(f"Executing: {tool_call.name}({tool_call.arguments}) - call #{self.tool_call_count}")
 
                             # Harness Engineering: 验证调用
@@ -239,7 +243,8 @@ class AgentLoop:
                         result = {
                             'answer': final_answer,
                             'iterations': state.iteration,
-                            'agent_id': agent.agent_id
+                            'agent_id': agent.agent_id,
+                            'skills_used': used_tools
                         }
 
                         if hasattr(agent, 'post_process_result'):
@@ -274,7 +279,8 @@ class AgentLoop:
                     result = {
                         'answer': final_response.content or '抱歉，未能完成任务',
                         'iterations': state.iteration,
-                        'warning': 'max_iterations_reached'
+                        'warning': 'max_iterations_reached',
+                        'skills_used': used_tools
                     }
 
                     if self.short_term_memory and session_id:
@@ -309,6 +315,7 @@ class AgentLoop:
                     should_review, reason = trigger.should_review_realtime(
                         agent_output=result,
                         forced_stop=forced_stop,
+                        question=input_data.get("question"),
                     )
 
                     if should_review:
@@ -320,6 +327,7 @@ class AgentLoop:
                             question=question,
                             answer=answer,
                             trigger_reason=reason,
+                            dimensions=result.get("review_dimensions"),
                         )
                         if review_result.action == "corrected" and review_result.correction:
                             result["answer"] = review_result.correction
@@ -335,7 +343,10 @@ class AgentLoop:
                         # 同样使用单例队列，保证审核页面能看到入队项
                         review_queue = get_default_queue()
                         question = input_data.get("question", str(input_data))
-                        review_queue.enqueue_async(question, result.get("answer", ""), async_reason)
+                        review_queue.enqueue_async(
+                            question, result.get("answer", ""), async_reason,
+                            dimensions=result.get("review_dimensions"),
+                        )
                 except Exception as e:
                     logger.warning(f"专家审核集成失败: {e}")
 

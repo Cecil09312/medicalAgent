@@ -26,10 +26,31 @@ _short_term_memory = None
 _long_term_memory = None
 _session_id = str(uuid.uuid4())
 
-# 触发实时审核的高风险关键词
-REVIEW_KEYWORDS = ["胸痛", "昏迷", "休克", "大出血", "呼吸困难", "中风", "心梗"]
+# 触发实时审核的高风险关键词：统一使用医疗安全硬约束的配置（constraints/emergency.py），
+# 与后端 AgentLoop / SwarmCoordinator 的判定口径保持一致
+def _hit_emergency_keyword(text: str) -> bool:
+    """检测文本是否命中高危症状关键词（硬约束配置统一维护）"""
+    try:
+        from constraints.emergency import detect_emergency
+        return detect_emergency(text) is not None
+    except Exception:
+        # 模块不可用时退回内置最小关键词集，保证高风险场景仍可触发审核
+        fallback = ["胸痛", "昏迷", "休克", "大出血", "呼吸困难", "中风", "心梗"]
+        return any(kw in text for kw in fallback)
+
+
 # 异步审核随机采样率（不阻塞用户）
 REVIEW_SAMPLE_RATE = 0.05
+
+# 固定免责声明横幅（医疗合规要求：始终可见，不随对话滚动消失）
+DISCLAIMER_BANNER_HTML = (
+    "<div style='display:flex;align-items:center;gap:8px;padding:8px 14px;"
+    "border:1px solid #f0c36d;border-left:4px solid #e8a33d;border-radius:8px;"
+    "background:#fdf6e8;color:#7a5b1e;font-size:13px;line-height:1.5;'>"
+    "⚕️ <b>免责声明：</b>本系统提供的信息不构成医疗诊断建议，不能替代执业医师诊疗。"
+    "若出现胸痛、呼吸困难、大出血、意识障碍等急症表现，请立即拨打 120 或前往急诊科就医。"
+    "</div>"
+)
 
 # 欢迎语：首次打开及重置会话时展示
 WELCOME_MESSAGE = (
@@ -67,8 +88,9 @@ def _get_coordinator():
             "research_agent": ResearchAgent(llm_client=llm_client),
         }
 
-        # 短期记忆
+        # 短期记忆（后端由 .env 的 MEMORY_BACKEND 决定：memory / redis 持久化）
         _short_term_memory = ShortTermMemory()
+        logger.info(f"短期记忆初始化完成 (backend={_short_term_memory.backend})")
 
         # 创建协调器
         _coordinator = SwarmCoordinator(
@@ -220,19 +242,27 @@ async def _process_question(user_message: str, history: list) -> str:
             answer = "抱歉，暂时无法生成回答，请重试。"
         suggestions = result.get("suggestions", [])
 
-        # 审核触发逻辑：高风险关键词触发实时审核（需配置开启），否则 5% 随机采样异步审核
+        # 审核触发逻辑：高危症状关键词触发实时审核（需配置开启），否则 5% 随机采样异步审核
         realtime_enabled = os.getenv("REVIEW_REALTIME_ENABLED", "false").lower() == "true"
-        hit_keyword = any(kw in user_message for kw in REVIEW_KEYWORDS)
+        hit_keyword = _hit_emergency_keyword(user_message)
 
         if hit_keyword and realtime_enabled:
             answer = await _run_review(user_message, answer)
         elif random.random() < REVIEW_SAMPLE_RATE:
             try:
                 from review.review_queue import get_default_queue
+                # 附加维度信息（疾病类别粗分类），供飞轮指标下钻
+                dimensions = None
+                try:
+                    from flywheel.dimensions import classify_disease_category
+                    dimensions = {"disease_category": classify_disease_category(user_message)}
+                except Exception:
+                    pass
                 get_default_queue().enqueue_async(
                     question=user_message,
                     answer=answer[:1000],
                     trigger_reason="random_sample",
+                    dimensions=dimensions,
                 )
             except Exception as e:
                 logger.warning(f"异步审核采样入队失败: {e}")
@@ -346,8 +376,16 @@ def _save_session_summary_async(history: list, session_id: str):
 
 
 def _reset_session(history: list):
-    """重置会话（先把本次会话摘要写入长期记忆，再清空对话并展示欢迎语）"""
+    """重置会话（清理旧会话短期记忆，再把本次会话摘要写入长期记忆，然后清空对话并展示欢迎语）"""
     global _session_id
+
+    # 旧会话的短期记忆随重置一并清除（redis 后端即删除 stm:* 键，避免会话键无限累积；
+    # memory 后端同样释放对应条目），失败不影响重置主流程
+    if _short_term_memory is not None:
+        try:
+            _short_term_memory.clear_session(_session_id)
+        except Exception as e:
+            logger.warning(f"清除旧会话短期记忆失败: {e}")
 
     # 会话结束：有实质对话内容时生成摘要存入长期记忆
     if _long_term_memory is not None and history and len(history) >= 3:
@@ -401,15 +439,23 @@ def create_chat_tab():
     _user_avatar = str(_project_root / "web" / "assets" / "user_avatar.png")
     _bot_avatar = str(_project_root / "web" / "assets" / "bot_avatar.png")
 
-    chatbot = gr.Chatbot(
-        label="对话",
-        height=440,
-        type="messages",
-        show_copy_button=True,
-        avatar_images=(_user_avatar, _bot_avatar),
-        value=[{"role": "assistant", "content": WELCOME_MESSAGE}],
-        elem_classes="medix-chatbot",
-    )
+    # 固定免责声明横幅（医疗合规：置于对话区上方，始终可见）
+    gr.HTML(DISCLAIMER_BANNER_HTML)
+
+    # 兼容 Gradio 4.x-6.x：不同版本 Chatbot 支持的参数不同（5.x+ 移除 type，6.x 移除
+    # show_copy_button 等），按构造签名过滤，仅传入当前版本支持的参数
+    import inspect
+    _supported = set(inspect.signature(gr.Chatbot.__init__).parameters)
+    _chatbot_kwargs = {
+        "label": "对话",
+        "height": 440,
+        "type": "messages",            # 4.x 需要；5.x+ 自动忽略（不在签名中会被过滤）
+        "show_copy_button": True,       # 4.x/5.x；6.x 移除后自动过滤
+        "avatar_images": (_user_avatar, _bot_avatar),
+        "value": [{"role": "assistant", "content": WELCOME_MESSAGE}],
+        "elem_classes": "medix-chatbot",
+    }
+    chatbot = gr.Chatbot(**{k: v for k, v in _chatbot_kwargs.items() if k in _supported})
 
     # 快速提问卡片网格（2 行 3 列，点击填充输入框）
     gr.Markdown("##### ✨ 快速提问")

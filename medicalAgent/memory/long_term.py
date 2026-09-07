@@ -3,6 +3,7 @@
 基于 Mem0 云服务的长期记忆存储与检索
 支持优雅降级（Mem0 不可用时回退到本地存储）
 """
+import re
 import sys
 import os
 import json
@@ -34,6 +35,26 @@ except ImportError:
     logger.warning("mem0ai 未安装，长期记忆将使用本地文件存储")
 
 
+def _extract_ngrams(text: str) -> set:
+    """
+    提取检索特征：英文/数字按整词，中文按字符二元组（bigram）
+
+    中文没有空格分隔，若按空格分词，整句中文会成为一个"关键词"而永远无法
+    命中记忆内容（例如"我血压有点高怎么办"匹配不到"血压偏高"）；滑窗二元组
+    可覆盖"血压"、"头痛"这类常见医疗词片段。
+    """
+    grams = set()
+    for word in re.findall(r"[a-z0-9]+", text.lower()):
+        if len(word) >= 2:
+            grams.add(word)
+    for seg in re.findall(r"[\u4e00-\u9fff]+", text):
+        if len(seg) == 1:
+            grams.add(seg)
+        else:
+            grams.update(seg[i:i + 2] for i in range(len(seg) - 1))
+    return grams
+
+
 class LongTermMemory:
     """
     长期记忆管理器
@@ -47,14 +68,19 @@ class LongTermMemory:
         初始化长期记忆
 
         Args:
-            config: Mem0 配置字典（可选，默认从 .env 读取 MEM0_API_KEY）
+            config: 配置字典（可选）
+                - api_key: Mem0 API Key，默认从 .env 读取 MEM0_API_KEY
+                - local_storage_dir: 本地降级存储目录（默认 memory/data/long_term，测试可指定临时目录）
         """
         self.config = config or {"api_key": MEM0_API_KEY}
         self._mem0_client = None
         self._use_mem0 = False
 
         # 本地降级存储
-        self._local_storage_dir = _project_root / "memory" / "data" / "long_term"
+        self._local_storage_dir = Path(
+            self.config.get("local_storage_dir")
+            or (_project_root / "memory" / "data" / "long_term")
+        )
         self._local_storage_dir.mkdir(parents=True, exist_ok=True)
         self._local_memories: List[Dict[str, Any]] = []
 
@@ -157,6 +183,7 @@ class LongTermMemory:
         Returns:
             相似会话列表
         """
+        cloud_results: List[Dict[str, Any]] = []
         if self._use_mem0 and self._mem0_client:
             try:
                 # mem0ai 2.x：user_id 需放入 filters；与保存时使用同一标识
@@ -169,25 +196,43 @@ class LongTermMemory:
                 if isinstance(results, dict):
                     results = results.get("results", [])
                 logger.debug(f"Mem0 搜索 '{query[:30]}...' 返回 {len(results)} 条结果")
-                return results
+                cloud_results = list(results)
             except Exception as e:
                 logger.warning(f"Mem0 搜索失败，回退到本地搜索: {e}")
 
-        # 本地简单搜索（关键词匹配）
-        return self._local_search(query, top_k)
+        # 云端与本地合并：Mem0 不可用期间的本地记忆（降级写入）在云端恢复后仍可被检索到，
+        # 避免切换存储后端导致历史记忆"失联"
+        local_results = self._local_search(query, top_k)
+        return self._merge_results(cloud_results + local_results, top_k)
+
+    @staticmethod
+    def _merge_results(results: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+        """合并云端/本地检索结果，按文本去重（云端在前），截断至 top_k"""
+        seen_texts = set()
+        merged = []
+        for r in results:
+            text = (r.get("memory") or r.get("summary") or "").strip()
+            key = "".join(text.split()).lower()
+            if not text or key in seen_texts:
+                continue
+            seen_texts.add(key)
+            merged.append(r)
+        return merged[:top_k]
 
     def _local_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """本地关键词搜索（降级方案）"""
-        query_keywords = set(query.lower().split())
-        scored_results = []
+        """本地 n-gram 搜索（降级方案）：中文按二元组匹配，兼容无空格的整句查询"""
+        query_grams = _extract_ngrams(query)
+        if not query_grams:
+            return []
 
+        scored_results = []
         for record in self._local_memories:
-            summary_lower = record["summary"].lower()
-            score = sum(1 for kw in query_keywords if kw in summary_lower)
-            if score > 0:
+            doc_grams = _extract_ngrams(record["summary"])
+            overlap = query_grams & doc_grams
+            if overlap:
                 scored_results.append({
                     **record,
-                    "score": score / len(query_keywords) if query_keywords else 0,
+                    "score": len(overlap) / len(query_grams),
                 })
 
         # 按得分排序

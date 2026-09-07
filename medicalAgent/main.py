@@ -276,6 +276,21 @@ def main():
 
     logger.info("Starting AI智能医疗诊断系统")
 
+    # 启动期统一配置校验（快速失败）：错误直接以可读清单退出，
+    # 避免误配置在运行期以隐蔽方式暴露；校验通过时打印脱敏配置摘要
+    from core.config import validate_config, print_config_summary
+    config_errors = validate_config()
+    if config_errors:
+        print("\n" + "=" * 60)
+        print("  ⚠️  配置校验失败，请修正以下问题后重启：")
+        print("=" * 60)
+        for i, err in enumerate(config_errors, 1):
+            print(f"  {i}. {err}")
+        print("=" * 60 + "\n")
+        logger.error(f"配置校验失败（{len(config_errors)} 项），启动中止")
+        sys.exit(1)
+    print_config_summary()
+
     if args.cli:
         # 运行命令行交互模式
         try:

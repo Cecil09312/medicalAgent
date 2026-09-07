@@ -8,7 +8,7 @@ from loguru import logger
 
 from core.llm_client import LLMClient
 from core.agent_loop import AgentLoop
-from core.model_router import is_simple_question, reset_route, set_route
+from core.model_router import classify_question, reset_route, set_route
 from .shared_context import SharedContext, SubTask, TaskStatus, Contribution
 from .events import Event, EventType
 from .lead_agent import LeadAgent
@@ -77,8 +77,10 @@ class SwarmCoordinator:
         logger.info(f"Processing question: {question[:100]}...")
 
         # 简单问题路由判定：简单问题本次请求强制使用小模型，复杂问题保持默认路由；
-        # 记录 token 以便请求结束后恢复默认路由
-        route_token = set_route("small") if is_simple_question(question) else None
+        # 记录 token 以便请求结束后恢复默认路由。
+        # classify_question 在启用二级 LLM 意图分类时对临界问题做一次小模型分类，
+        # 未启用/分类失败时退化为纯启发式判断（行为与现状一致）
+        route_token = set_route("small") if await classify_question(question) else None
         if route_token is not None:
             logger.info("简单问题路由: 本次请求使用小模型")
 
@@ -107,6 +109,35 @@ class SwarmCoordinator:
                     logger.info(f"Swarm mode with {len(subtasks)} agents")
                     result = await self._process_with_swarm(question, decomposition, session_id)
 
+                # 附加审核维度信息（疾病类别/Skill/Agent，供飞轮指标下钻）
+                try:
+                    from flywheel.dimensions import build_review_dimensions
+                    result["review_dimensions"] = build_review_dimensions(question, result)
+                except Exception as e:
+                    logger.warning(f"维度信息构建失败: {e}")
+
+                # 医疗安全硬约束：问题命中高危症状关键词时，
+                # 若回答未包含紧急就医引导（且未获得专家审核修正），强制改写为标准就医话术；
+                # 原回答保留在 reference_answer 字段（不直接展示给用户）。
+                # 实时专家审核已在 AgentLoop 内按 high_risk 原因强制触发（见 review_trigger）
+                try:
+                    from constraints.emergency import (
+                        detect_emergency, emergency_response, has_urgent_care_guidance,
+                    )
+                    matched_keyword = detect_emergency(question)
+                    if matched_keyword and result.get("answer"):
+                        result["emergency_keyword"] = matched_keyword
+                        if not has_urgent_care_guidance(result["answer"]):
+                            result["reference_answer"] = result["answer"]
+                            result["answer"] = emergency_response(matched_keyword)
+                            result["warning"] = "emergency_hard_constraint"
+                            logger.warning(
+                                f"医疗安全硬约束触发（关键词: {matched_keyword}），"
+                                "回答已强制改写为紧急就医引导"
+                            )
+                except Exception as e:
+                    logger.warning(f"医疗安全硬约束执行失败: {e}")
+
                 # 专家审核集成（异步抽样）
                 if REVIEW_ENABLED and result.get("answer"):
                     try:
@@ -115,7 +146,10 @@ class SwarmCoordinator:
                         if should_async:
                             # 使用进程级单例队列：保证审核页面能实时看到此处入队的审核项
                             review_queue = get_default_queue()
-                            review_queue.enqueue_async(question, result["answer"], async_reason)
+                            review_queue.enqueue_async(
+                                question, result["answer"], async_reason,
+                                dimensions=result.get("review_dimensions"),
+                            )
                     except Exception as e:
                         logger.warning(f"Swarm 审核集成失败: {e}")
 

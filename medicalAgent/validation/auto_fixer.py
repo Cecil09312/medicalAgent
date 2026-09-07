@@ -37,6 +37,8 @@ class AutoFixer:
                 fixed_output = self.fix_missing_disclaimer(fixed_output)
             elif fix_type == "high_risk_warning":
                 fixed_output = self.fix_high_risk_warning(fixed_output)
+            elif fix_type == "emergency_guidance":
+                fixed_output = self.fix_emergency_guidance(fixed_output)
             elif fix_type == "excessive_length":
                 fixed_output = self.fix_excessive_length(fixed_output)
             elif fix_type == "remove_diagnose_disease":
@@ -102,6 +104,28 @@ class AutoFixer:
             logger.debug("Added high-risk warning")
         
         return output
+
+    def fix_emergency_guidance(self, output: str) -> str:
+        """
+        硬约束修复：高危症状回答缺少紧急就医引导时，强制在回答最前方加入就医引导
+
+        Args:
+            output: 输出文本
+
+        Returns:
+            修复后的文本
+        """
+        from constraints.emergency import has_urgent_care_guidance
+
+        if has_urgent_care_guidance(output):
+            return output
+
+        guidance = (
+            "⚠️ **紧急提醒：** 您描述的症状可能属于急症，"
+            "请立即拨打 120 或前往最近的急诊科就诊，不要等待线上回复。\n\n"
+        )
+        logger.info("已强制加入紧急就医引导（医疗安全硬约束）")
+        return guidance + output
 
     def fix_excessive_length(self, output: str) -> str:
         """

@@ -39,6 +39,7 @@ class ReviewTrigger:
         risk_level: str = "",
         violations: Optional[List[str]] = None,
         forced_stop: bool = False,
+        question: Optional[str] = None,
     ) -> tuple:
         """
         判断是否需要实时审核
@@ -48,6 +49,7 @@ class ReviewTrigger:
             risk_level: 风险评估等级 ("HIGH" / "MEDIUM" / "LOW" / "")
             violations: 约束违规列表
             forced_stop: 是否因达到最大迭代次数被强制终止
+            question: 用户原始问题（可选；命中医疗安全高危关键词时强制实时审核）
 
         Returns:
             (should_review: bool, reason: str)
@@ -57,6 +59,17 @@ class ReviewTrigger:
 
         answer = agent_output.get("answer", "")
         violations = violations or []
+
+        # 条件0: 医疗安全硬约束——问题命中高危症状关键词，必须实时专家审核
+        if question:
+            try:
+                from constraints.emergency import detect_emergency
+                matched = detect_emergency(question)
+                if matched:
+                    logger.info(f"实时审核触发: 问题命中高危症状关键词 '{matched}'")
+                    return True, "high_risk"
+            except ImportError:
+                pass
 
         # 条件1: 高风险症状
         if risk_level.upper() == "HIGH":

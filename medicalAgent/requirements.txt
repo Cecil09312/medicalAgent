@@ -9,7 +9,8 @@ pydantic==2.10.0
 pydantic-settings==2.7.0
 
 # 记忆管理
-mem0ai==0.1.0
+# mem0ai>=2.0.20：代码按 2.x 平台版 API 编写（search 的 filters 参数），0.1.x 不兼容
+mem0ai>=2.0.20,<3.0.0
 redis==5.2.0
 qdrant-client==1.12.0
 
@@ -40,6 +41,10 @@ httpx>=0.24.0
 
 # 评估框架
 deepeval>=2.0.0
+
+# 测试（pytest tests/ -v）
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
 
 # Web前端
 gradio>=4.0.0

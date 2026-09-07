@@ -44,6 +44,20 @@ try:
 except ValueError:
     RERANK_CANDIDATE_K = 15
 
+# 检索缓存（Redis 防护组件）：向量检索+重排是当前最贵的查询，缓存结果并做
+# 击穿互斥重建（singleflight）与 TTL 抖动（雪崩保护）；Redis 不可用时自动直通
+KB_SEARCH_CACHE_ENABLED = os.getenv("KB_SEARCH_CACHE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+try:
+    KB_SEARCH_CACHE_TTL = int(os.getenv("KB_SEARCH_CACHE_TTL", "300"))
+except ValueError:
+    KB_SEARCH_CACHE_TTL = 300
+# top_k 超过该值的查询结果集过大，不缓存（避免逼近大 key 阈值）
+_KB_CACHE_MAX_TOP_K = 20
+# 缓存世代号键：知识库内容变更时 INCR，旧世代键靠 TTL 自然淘汰（无需 SCAN 清理）
+_KB_CACHE_GEN_KEY = "kb:search:gen"
+
+from core.redis_guard import get_shared_client, singleflight_get_or_build
+
 # HuggingFace 本地缓存路径检测
 _HF_HOME = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
 _MODEL_CACHE_DIR = os.path.join(_HF_HOME, "hub")
@@ -396,6 +410,34 @@ class MedicalKnowledgeBase:
         # 说明：search() 的首个参数即为查询文本，其内部会先调用 _embed 生成
         # 查询向量再执行向量检索，因此这里直接透传文本，避免重复嵌入计算
         return self.search(query=query, top_k=top_k, **kwargs)
+
+    def delete_by_source(self, source: str) -> int:
+        """
+        按来源删除文档块（知识库增量更新时替换旧版本使用）
+
+        Args:
+            source: 文档来源标识（add_documents 时的 source 参数）
+
+        Returns:
+            删除的文档块数量
+        """
+        if not source:
+            return 0
+        if not self._client.has_collection(self.collection_name):
+            return 0
+        try:
+            result = self._client.delete(
+                collection_name=self.collection_name,
+                filter=f'source == "{source}"',
+            )
+            delete_count = 0
+            if isinstance(result, dict):
+                delete_count = int(result.get("delete_count", 0) or 0)
+            logger.info(f"已按 source 删除 {delete_count} 个文档块 (source={source})")
+            return delete_count
+        except Exception as e:
+            logger.error(f"按 source 删除文档块失败 (source={source}): {e}")
+            raise
 
     def delete_collection(self):
         """删除当前集合"""
