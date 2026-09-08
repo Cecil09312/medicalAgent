@@ -16,8 +16,8 @@ build/
 .pytest_cache/
 .mypy_cache/
 
-# 知识库向量数据库（首次启动在容器内自动构建，或通过 volume 挂载宿主机的）
-knowledge/data/milvus_lite.db/
+# 知识库向量数据库（单文件 db；首次启动在容器内自动构建，或通过 volume 挂载宿主机的）
+knowledge/data/milvus_lite.db
 
 # 运行时数据（通过 volume 持久化，不打包进镜像）
 logs/
@@ -29,7 +29,6 @@ evaluation/data/reports/
 .vscode/
 .idea/
 .trae/
-.claude/
 .deepeval/
 
 # 版本控制

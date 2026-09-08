@@ -155,15 +155,12 @@ async def consult(question: str, session_id: Optional[str] = None, context: Opti
     Args:
         question: 用户问题
         session_id: 会话ID
-        context: 上下文信息
+        context: 上下文信息（保留参数兼容，当前循环不使用）
 
     Returns:
         咨询结果
     """
+    from orchestrator.worker_runner import WorkerRunner
+
     agent = ConsultationAgent()
-    input_data = {
-        'question': question,
-        'session_id': session_id,
-        'context': context
-    }
-    return await agent.process(input_data)
+    return await WorkerRunner(agent).run(question, session_id)

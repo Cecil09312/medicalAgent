@@ -53,31 +53,23 @@ class PerformanceEvaluator:
         初始化性能评估器
 
         Args:
-            coordinator: SwarmCoordinator 实例（可选）
+            coordinator: 编排器实例（可选）
             agents: Agent 实例字典（可选）
         """
         self.coordinator = coordinator
         self.agents = agents or {}
 
     def _get_coordinator(self):
-        """获取 SwarmCoordinator 实例"""
+        """获取编排器实例（经工厂构建，与主链路同一组装方式）"""
         if self.coordinator is not None:
             return self.coordinator
 
         try:
-            from swarm.swarm_coordinator import SwarmCoordinator
-            from agents.consultation_agent import ConsultationAgent
-            from agents.diagnostic_agent import DiagnosticAgent
-            from agents.research_agent import ResearchAgent
+            from orchestrator.factory import build_orchestrator
 
-            agents = {
-                "consultation_agent": ConsultationAgent(),
-                "diagnostic_agent": DiagnosticAgent(),
-                "research_agent": ResearchAgent(),
-            }
-            self.coordinator = SwarmCoordinator(worker_agents=agents)
+            self.coordinator = build_orchestrator(worker_agents=self.agents or None)
         except Exception as e:
-            logger.error(f"无法创建 SwarmCoordinator: {e}")
+            logger.error(f"无法创建编排器: {e}")
             raise
 
         return self.coordinator

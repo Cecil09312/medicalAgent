@@ -105,6 +105,34 @@ def _is_model_cached(model_name: str) -> bool:
     return cached
 
 
+def _kb_cache_generation(client) -> int:
+    """当前缓存世代号（知识变更时 INCR；读取失败按 0 处理，仅影响命中率）"""
+    try:
+        return int(client.get(_KB_CACHE_GEN_KEY) or 0)
+    except Exception:
+        return 0
+
+
+def _invalidate_search_cache() -> None:
+    """知识库内容变更后失效全部检索缓存（INCR 世代号；Redis 不可用时靠 TTL 兜底）"""
+    client = get_shared_client()
+    if client is None:
+        return
+    try:
+        client.incr(_KB_CACHE_GEN_KEY)
+        logger.info("检索缓存已失效（知识库内容变更）")
+    except Exception as e:
+        logger.debug(f"检索缓存失效失败（等待 TTL 自然过期兜底）: {e}")
+
+
+def _kb_cache_key(client, query: str, top_k: int, doc_type: Optional[str]) -> str:
+    """缓存键 = 世代号 + 查询指纹（query/top_k/doc_type/重排配置共同影响结果）"""
+    fingerprint = hashlib.sha256(
+        f"{query}|{top_k}|{doc_type or ''}|{RERANK_ENABLED}|{RERANK_CANDIDATE_K}".encode("utf-8")
+    ).hexdigest()[:24]
+    return f"kb:search:g{_kb_cache_generation(client)}:{fingerprint}"
+
+
 class MedicalKnowledgeBase:
     """
     医疗知识库（单例模式）
@@ -325,6 +353,8 @@ class MedicalKnowledgeBase:
 
         self._client.insert(collection_name=self.collection_name, data=data)
         logger.info(f"成功插入 {len(data)} 个文档块 (doc_type={doc_type}, source={source})")
+        # 内容已变更：失效检索缓存，确保后续查询不命中旧结果
+        _invalidate_search_cache()
         return len(data)
 
     def search(
@@ -334,11 +364,12 @@ class MedicalKnowledgeBase:
         doc_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        语义搜索
+        语义搜索（带 Redis 检索缓存）
 
-        开启 RERANK_ENABLED 时执行两阶段检索：向量召回 RERANK_CANDIDATE_K 条候选，
-        经 CrossEncoder 精排后返回 top_k 条（结果含 rerank_score 字段，按其降序）；
-        关闭时为单阶段向量检索，行为与精排上线前一致。
+        缓存开启且 Redis 可用时：结果按 query/top_k/doc_type/重排配置指纹缓存
+        KB_SEARCH_CACHE_TTL 秒（含随机抖动）；miss 时经 singleflight 互斥重建，
+        防止热点查询失效瞬间并发请求全部击穿到底层检索（缓存击穿保护）。
+        Redis 不可用或 top_k 超限时直通检索，行为与无缓存完全一致。
 
         Args:
             query: 查询文本
@@ -347,6 +378,32 @@ class MedicalKnowledgeBase:
 
         Returns:
             搜索结果列表，每项包含 text / score / doc_type / source / page（精排开启时另含 rerank_score）
+        """
+        if not (KB_SEARCH_CACHE_ENABLED and top_k <= _KB_CACHE_MAX_TOP_K):
+            return self._search_uncached(query=query, top_k=top_k, doc_type=doc_type)
+        client = get_shared_client()
+        if client is None:
+            return self._search_uncached(query=query, top_k=top_k, doc_type=doc_type)
+        cache_key = _kb_cache_key(client, query, top_k, doc_type)
+        return singleflight_get_or_build(
+            client,
+            cache_key,
+            builder=lambda: self._search_uncached(query=query, top_k=top_k, doc_type=doc_type),
+            ttl_seconds=KB_SEARCH_CACHE_TTL,
+        )
+
+    def _search_uncached(
+        self,
+        query: str,
+        top_k: int,
+        doc_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        语义检索（不含缓存层）
+
+        开启 RERANK_ENABLED 时执行两阶段检索：向量召回 RERANK_CANDIDATE_K 条候选，
+        经 CrossEncoder 精排后返回 top_k 条（结果含 rerank_score 字段，按其降序）；
+        关闭时为单阶段向量检索，行为与精排上线前一致。
         """
         query_embedding = self._embed([query])[0]
 
@@ -434,6 +491,7 @@ class MedicalKnowledgeBase:
             if isinstance(result, dict):
                 delete_count = int(result.get("delete_count", 0) or 0)
             logger.info(f"已按 source 删除 {delete_count} 个文档块 (source={source})")
+            _invalidate_search_cache()  # 内容已变更：失效检索缓存
             return delete_count
         except Exception as e:
             logger.error(f"按 source 删除文档块失败 (source={source}): {e}")
@@ -444,6 +502,7 @@ class MedicalKnowledgeBase:
         if self._client.has_collection(self.collection_name):
             self._client.drop_collection(self.collection_name)
             logger.info(f"已删除集合: {self.collection_name}")
+            _invalidate_search_cache()  # 内容已变更：失效检索缓存
 
     def count_documents(self) -> int:
         """

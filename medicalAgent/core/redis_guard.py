@@ -109,6 +109,19 @@ def jittered_ttl(base_ttl: int, jitter_ratio: float = 0.1) -> int:
     return int(base_ttl + random.uniform(0, base_ttl * jitter_ratio))
 
 
+def safe_unlink(client: Any, *keys: str) -> int:
+    """
+    优先 UNLINK 异步释放（大 key 删除不阻塞主线程）；
+    旧版 Redis（<4.0）无此命令时回退 DEL。
+    """
+    try:
+        return client.unlink(*keys)
+    except Exception as e:
+        if "unknown command" in str(e).lower():
+            return client.delete(*keys)
+        raise
+
+
 # ----------------------------------------------------------------------
 # 分布式锁（并发保护）
 # ----------------------------------------------------------------------

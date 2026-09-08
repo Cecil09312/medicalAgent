@@ -102,11 +102,11 @@ class SessionSummary:
         shared_context: Dict[str, Any],
     ) -> "SessionSummary":
         """
-        从 SharedContext 字典构建会话摘要
+        从协作上下文字典构建会话摘要
 
         Args:
             session_id: 会话 ID
-            shared_context: 共享上下文字典，可包含以下字段：
+            shared_context: 协作上下文字典，可包含以下字段：
                 - task_description: 任务描述
                 - agents: Agent 参与信息列表
                 - findings: 关键发现列表

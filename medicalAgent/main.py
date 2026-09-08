@@ -112,13 +112,13 @@ async def interactive_mode():
     session_id = str(uuid.uuid4())
     logger.info(f"New session started: {session_id}")
 
-    # 尝试导入 process_with_swarm（如果可用）
+    # 构建编排器（LangGraph 多Agent编排，失败时回退基础 LLM 模式）
+    orchestrator = None
     try:
-        from swarm import process_with_swarm
-        swarm_available = True
-    except ImportError:
-        logger.warning("Swarm module not available, using basic mode")
-        swarm_available = False
+        from orchestrator import build_orchestrator
+        orchestrator = build_orchestrator()
+    except Exception as e:
+        logger.warning(f"Orchestrator not available, using basic mode: {e}")
 
     # 主循环
     while True:
@@ -150,15 +150,15 @@ async def interactive_mode():
             # 处理问题
             start_time = time.time()
 
-            if swarm_available:
+            if orchestrator is not None:
                 try:
-                    result = await process_with_swarm(user_input, session_id=session_id)
+                    result = await orchestrator.process(user_input, session_id=session_id)
 
                     elapsed = time.time() - start_time
 
                     # 显示结果
                     print("\n" + "-" * 60)
-                    print(f"🤖 AI智能医疗诊断系统 (Swarm模式 | 耗时: {elapsed:.2f}s)")
+                    print(f"🤖 AI智能医疗诊断系统 (多Agent模式 | 耗时: {elapsed:.2f}s)")
                     print("-" * 60)
 
                     if isinstance(result, dict):
@@ -175,7 +175,7 @@ async def interactive_mode():
                         print(f"\n{result}")
 
                 except Exception as e:
-                    logger.error(f"Swarm processing failed: {e}")
+                    logger.error(f"Orchestrator processing failed: {e}")
                     print(f"\n⚠️  处理失败: {e}")
                     print("💡 建议：请尝试简化问题或检查系统配置")
 

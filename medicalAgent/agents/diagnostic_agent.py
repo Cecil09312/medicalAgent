@@ -140,8 +140,6 @@ async def diagnose(symptoms: str, session_id: Optional[str] = None) -> Dict[str,
         诊断结果
     """
     agent = DiagnosticAgent()
-    input_data = {
-        'question': symptoms,
-        'session_id': session_id
-    }
-    return await agent.process(input_data)
+    from orchestrator.worker_runner import WorkerRunner
+
+    return await WorkerRunner(agent).run(symptoms, session_id)

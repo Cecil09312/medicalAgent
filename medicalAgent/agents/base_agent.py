@@ -7,14 +7,14 @@ from typing import Dict, Any, Optional
 from loguru import logger
 
 from core.llm_client import LLMClient
-from core.agent_loop import AgentLoop
 from core.skill_registry import SkillRegistry
 
 
 class BaseAgent(ABC):
     """
     智能体基类
-    提供 LLM 驱动的工具调用循环能力
+    提供系统提示词、技能注册与执行能力；
+    工具调用循环由 orchestrator.worker_runner.WorkerRunner 驱动
     """
 
     def __init__(
@@ -34,18 +34,10 @@ class BaseAgent(ABC):
         self.agent_id = agent_id
         self.config = config
         self.llm_client = llm_client or LLMClient()
-
-        # 初始化核心组件
-        self.loop = AgentLoop(
-            max_iterations=config.get('max_iterations', 10),
-            max_tool_calls=config.get('max_tool_calls', 2)
-        )
         self.skill_registry = SkillRegistry()
 
-        # Swarm 相关属性
+        # 能力集（供任务分解参考）
         self._capabilities = set()
-        self._shared_context = None
-        self._identity_manager = None
 
         # 注册工具
         self.register_tools()
@@ -121,33 +113,7 @@ class BaseAgent(ABC):
         # 默认不做处理
         return result
 
-    async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        处理输入（主入口）
-
-        Args:
-            input_data: 输入数据
-
-        Returns:
-            处理结果
-        """
-        session_id = input_data.get('session_id')
-        return await self.run_loop(input_data, session_id)
-
-    async def run_loop(self, input_data: Dict[str, Any], session_id: Optional[str] = None) -> Dict[str, Any]:
-        """
-        运行 Agent 循环
-
-        Args:
-            input_data: 输入数据
-            session_id: 会话ID
-
-        Returns:
-            循环结果
-        """
-        return await self.loop.run(self, input_data, session_id)
-
-    # ========== Swarm 方法 ==========
+    # ========== 能力集 ==========
 
     def set_capabilities(self, capabilities: set):
         """
@@ -167,36 +133,3 @@ class BaseAgent(ABC):
             能力集合
         """
         return self._capabilities
-
-    def attach_shared_context(self, context: Any):
-        """
-        附加共享上下文
-
-        Args:
-            context: 共享上下文对象
-        """
-        self._shared_context = context
-        logger.debug(f"Agent {self.agent_id} attached shared context")
-
-    def attach_identity_manager(self, identity_manager: Any):
-        """
-        附加身份管理器
-
-        Args:
-            identity_manager: 身份管理器对象
-        """
-        self._identity_manager = identity_manager
-        logger.debug(f"Agent {self.agent_id} attached identity manager")
-
-    async def process_subtask(self, subtask: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        处理子任务（Swarm 模式）
-
-        Args:
-            subtask: 子任务数据
-
-        Returns:
-            子任务结果
-        """
-        logger.info(f"Agent {self.agent_id} processing subtask: {subtask.get('task_id', 'unknown')}")
-        return await self.process(subtask)

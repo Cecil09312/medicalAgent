@@ -220,65 +220,6 @@ def test_auto_fixer():
     logger.info("✅ AutoFixer test passed")
 
 
-def test_shared_context():
-    """测试 SharedContext: 子任务管理"""
-    logger.info("Testing SharedContext...")
-
-    try:
-        from swarm.shared_context import SharedContext
-    except ImportError:
-        logger.warning("SharedContext not available, skipping")
-        return
-
-    context = SharedContext()
-
-    # 添加子任务
-    context.add_subtask("task_1", "分析症状", "medical_agent")
-    context.add_subtask("task_2", "查询知识库", "research_agent")
-
-    # 获取子任务
-    tasks = context.get_all_subtasks()
-    assert len(tasks) == 2
-
-    # 更新子任务状态
-    context.update_subtask_status("task_1", "completed")
-    task_1 = context.get_subtask("task_1")
-    assert task_1["status"] == "completed"
-
-    logger.info("✅ SharedContext test passed")
-
-
-def test_event_system():
-    """测试 EventSystem: 事件创建和过滤"""
-    logger.info("Testing EventSystem...")
-
-    try:
-        from swarm.event_system import Event, EventSystem
-    except ImportError:
-        logger.warning("EventSystem not available, skipping")
-        return
-
-    event_system = EventSystem()
-
-    # 创建事件
-    event1 = Event(type="tool_call", data={"tool": "search"}, agent_id="agent_1")
-    event2 = Event(type="response", data={"content": "回答"}, agent_id="agent_2")
-
-    # 发布事件
-    event_system.publish(event1)
-    event_system.publish(event2)
-
-    # 过滤事件
-    tool_events = event_system.filter_by_type("tool_call")
-    assert len(tool_events) == 1
-    assert tool_events[0].data["tool"] == "search"
-
-    agent_events = event_system.filter_by_agent("agent_1")
-    assert len(agent_events) == 1
-
-    logger.info("✅ EventSystem test passed")
-
-
 def main():
     """运行所有测试"""
     print("\n" + "=" * 60)
@@ -292,8 +233,6 @@ def main():
         ("EntropyManager", test_entropy_manager),
         ("ConstraintValidator", test_constraint_validator),
         ("AutoFixer", test_auto_fixer),
-        ("SharedContext", test_shared_context),
-        ("EventSystem", test_event_system),
     ]
 
     passed = 0

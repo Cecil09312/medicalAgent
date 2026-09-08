@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from loguru import logger
 
-# 模块级 YAML 配置缓存：ConstraintValidator 可能被频繁实例化（如 AgentLoop 每次运行新建），
+# 模块级 YAML 配置缓存：ConstraintValidator 可能被频繁实例化（如各 WorkerRunner 初始化时新建），
 # 首次加载后缓存配置对象，避免每次实例化都重复读盘。
 # 配置内容在整个运行期只读（全项目仅通过 .get() 读取），因此可安全共享同一缓存对象。
 _constraints_cache: Optional[Dict[str, Any]] = None

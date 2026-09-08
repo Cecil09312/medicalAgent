@@ -42,7 +42,7 @@ try:
 except ImportError:
     pass
 
-from core.redis_guard import RedisLock, jittered_ttl
+from core.redis_guard import RedisLock, jittered_ttl, safe_unlink
 from .entropy_manager import MemoryEntropyManager
 
 # redis 包可选：未安装时后端只能为 memory，运行期熔断守卫也不生效
@@ -507,7 +507,7 @@ class ShortTermMemory:
             # 双重检查：排队期间可能已被其他进程/线程迁移
             new_key = _session_key(session_id)
             if client.hget(new_key, "seq") is not None:
-                client.unlink(old_key)
+                safe_unlink(client, old_key)
                 return True
 
             data = json.loads(payload)
@@ -526,15 +526,14 @@ class ShortTermMemory:
                 "created_at": data.get("created_at", now),
                 "updated_at": data.get("updated_at", now),
             }
-            client.hset(new_key, mapping={
-                "meta": json.dumps(meta, ensure_ascii=False),
-                "first": "1",
-            })
+            # 逐字段 hset（兼容旧版 Redis：HSET 多字段形式 4.0 才引入）
+            client.hset(new_key, "meta", json.dumps(meta, ensure_ascii=False))
+            client.hset(new_key, "first", "1")
             for i, message in enumerate(messages, start=1):
                 client.hset(new_key, _msg_field(i), _encode_message(message))
             client.hset(new_key, "seq", str(len(messages)))
             self._redis_refresh_ttl(new_key)
-            client.unlink(old_key)
+            safe_unlink(client, old_key)
             logger.info(
                 f"会话 {session_id} 已由旧格式（stm: STRING）迁移为新格式"
                 f"（stm2: HASH），共 {len(messages)} 条消息"
@@ -591,9 +590,10 @@ class ShortTermMemory:
 
     @_redis_conn_guarded
     def _redis_clear(self, session_id: str) -> None:
-        """UNLINK 异步删除大 key（避免 DEL 同步释放阻塞）；同时清理可能的旧格式键"""
-        self._redis_client.unlink(
-            _session_key(session_id), f"{_LEGACY_KEY_PREFIX}{session_id}"
+        """异步删除大 key（UNLINK，旧版 Redis 回退 DEL）；同时清理可能的旧格式键"""
+        safe_unlink(
+            self._redis_client,
+            _session_key(session_id), f"{_LEGACY_KEY_PREFIX}{session_id}",
         )
 
     @_redis_conn_guarded

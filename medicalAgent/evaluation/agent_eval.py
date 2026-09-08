@@ -289,33 +289,17 @@ class AgentEvaluator:
 
     async def _run_agent(self, agent, question: str) -> Dict[str, Any]:
         """运行 Agent 并收集工具调用链"""
-        from core.agent_loop import AgentLoop
+        from orchestrator.worker_runner import WorkerRunner
 
-        agent_loop = AgentLoop(max_iterations=5, max_tool_calls=5)
-        result = await agent_loop.run(agent, {"question": question})
-
-        # 提取工具调用链
-        tool_calls = []
-        if hasattr(agent_loop, "state_manager") and agent_loop.state_manager:
-            # task_id 为 run() 内部生成的随机 uuid，外部无法获知；
-            # 每个评估用例使用独立 AgentLoop，其 StateManager 仅含本次运行的 state，
-            # 故直接遍历并按 agent_id 校验
-            for state in agent_loop.state_manager.states.values():
-                if getattr(state, "agent_id", "") != getattr(agent, "agent_id", ""):
-                    continue
-                for step in getattr(state, "intermediate_results", []):
-                    # 中间结果结构:
-                    # {'iteration':..,'result':{'llm_response':{'tool_calls':[{'name':..,'arguments':..}]}}}
-                    llm_resp = (step.get("result") or {}).get("llm_response") or {}
-                    for tc in (llm_resp.get("tool_calls") or []):
-                        name = tc.get("name")
-                        if name:
-                            tool_calls.append(name)
+        runner = WorkerRunner(agent, max_tool_calls=5, recursion_limit=25)
+        result = await runner.run(question)
 
         return {
             "answer": result.get("answer", ""),
-            "tool_calls": tool_calls,
-            "iterations": getattr(agent_loop, "tool_call_count", 0),
+            # 工具调用链：去重后的实际调用名单（按首次调用顺序）
+            "tool_calls": result.get("skills_used", []),
+            # 实际工具调用总次数
+            "iterations": runner.budget.call_count,
         }
 
     async def evaluate(self, test_cases: List[AgentTestCase], agent_id: Optional[str] = None) -> AgentEvalResult:

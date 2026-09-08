@@ -5,13 +5,13 @@
 AI智能诊断医疗Agent 是一个多智能体协作医疗助手系统，采用 **Skills-Agent 两层架构**：
 
 - **Skills 层**: 7 个原子 Skill 自包含，直接转换为 OpenAI function calling 格式
-- **Agent 层**: 3 个专业 Agent 通过 Agent Loop 自主选择调用 Skill
-- **Swarm 层**: SwarmCoordinator 智能路由，支持单 Agent 和多 Agent 并行两种模式
+- **Agent 层**: 3 个专业 Agent，由 WorkerRunner(LangGraph react agent) 驱动自主选择调用 Skill
+- **编排层**: LangGraph StateGraph 智能路由，支持单 Agent 和多 Agent 并行两种模式
 
 ```
-用户问题 -> SwarmCoordinator(智能路由)
-  -> 简单问题: 单Agent(ConsultationAgent)
-  -> 复杂问题: LeadAgent(分解) -> 3个Worker并行执行 -> LeadAgent(汇总)
+用户问题 -> LangGraphOrchestrator(StateGraph 编排图)
+  -> 简单问题: 单Worker(ConsultationAgent)直出
+  -> 复杂问题: decompose(LLM分解) -> Send并行派发3个Worker -> synthesize(综合)
 ```
 
 ## 2. 技术栈
@@ -19,6 +19,7 @@ AI智能诊断医疗Agent 是一个多智能体协作医疗助手系统，采用
 | 组件 | 技术选型 | 说明 |
 |------|---------|------|
 | 语言 | Python 3.10+ | 异步支持 (asyncio) |
+| 多Agent编排 | LangGraph + langchain-core | StateGraph 状态图 + create_react_agent（见第 13 章迁移记录） |
 | LLM | OpenAI 兼容 API | openai.AsyncOpenAI |
 | 向量数据库 | Milvus Lite | 本地存储，无需部署 |
 | Embedding | BAAI/bge-small-zh-v1.5 | 512维，Sentence Transformers |
@@ -27,7 +28,7 @@ AI智能诊断医疗Agent 是一个多智能体协作医疗助手系统，采用
 | 日志 | loguru | 结构化日志 |
 | 搜索 | DuckDuckGo | DeepResearch 网络搜索 |
 | 评估 | DeepEval | RAG/Agent/Swarm/性能评估 |
-| Web前端 | Gradio 4.x | 对话界面 + 审核面板 + 指标仪表盘 |
+| Web前端 | Gradio 4.x-6.x | 对话界面 + 审核面板 + 指标仪表盘 |
 
 ## 3. 目录结构
 
@@ -47,23 +48,26 @@ c:\直播课\medicalAgent\
 │   ├── model_router.py                # 大小模型路由(contextvar请求级开关 + 简单问题启发式)
 │   ├── skill_registry.py              # Skill注册表(注册/执行/转OpenAI format)
 │   ├── skill_loader.py                # 动态加载Skills(扫描.claude/skills/)
-│   ├── agent_loop.py                  # Agent Loop(Think-Act-Observe循环)
-│   └── state_manager.py               # 状态管理
+│   ├── state_manager.py               # 状态管理
+│   └── redis_guard.py                 # Redis防护组件(分布式锁/singleflight/TTL抖动)
 │
 ├── agents/                            # Agent实现
 │   ├── __init__.py
-│   ├── base_agent.py                  # Agent基类(Skill注册+Swarm协作)
+│   ├── base_agent.py                  # Agent基类(提示词+技能注册+执行)
 │   ├── skill_registry_mixin.py        # Skill统一注册混入
 │   ├── consultation_agent.py          # 健康咨询Agent
 │   ├── diagnostic_agent.py            # 症状诊断Agent
 │   └── research_agent.py              # 医学研究Agent
 │
-├── swarm/                             # Swarm协调器
+├── orchestrator/                      # LangGraph 多Agent编排
 │   ├── __init__.py
-│   ├── events.py                      # 事件驱动通信
-│   ├── shared_context.py              # 共享环境(信息素/黑板系统)
-│   ├── lead_agent.py                  # 任务分解+结果汇总
-│   └── swarm_coordinator.py           # 智能路由+Swarm入口
+│   ├── coordinator.py                 # LangGraphOrchestrator(主入口, 分解/综合/后处理)
+│   ├── graph.py                       # StateGraph 编排图(节点/条件边/Send并行)
+│   ├── state.py                       # 图状态定义(TypedDict + reducer)
+│   ├── worker_runner.py               # WorkerRunner(create_react_agent + 横切关注点)
+│   ├── llm_adapter.py                 # LLMClient→langchain BaseChatModel 适配器
+│   ├── tools.py                       # Skill→StructuredTool 适配 + 工具调用预算
+│   └── factory.py                     # build_orchestrator 工厂(统一组装)
 │
 ├── memory/                            # 记忆管理
 │   ├── __init__.py
@@ -147,6 +151,9 @@ c:\直播课\medicalAgent\
 │   ├── disease-code/script/code.py
 │   ├── clinical-guideline/script/guideline.py
 │   └── deep-research/script/research.py
+│
+├── scripts/
+│   └── e2e_smoke.py                   # 端到端冒烟脚本(真实LLM: 单Agent/多Agent/高危/记忆/RAG)
 │
 └── examples/
     └── test_all.py                    # 测试套件
@@ -239,13 +246,9 @@ ROUTE_SIMPLE_MAX_LEN=30            # 简单问题长度阈值
 - 自动发现 `script/` 下的可调用函数
 - 读取 SKILL.md 元数据
 
-#### core/agent_loop.py - Agent循环引擎
+#### （已移除）core/agent_loop.py - Agent循环引擎
 
-- Think-Act-Observe 循环
-- 集成短期记忆（消息历史注入）
-- 集成约束验证（tool call 前验证 + 输出后验证/修复）
-- 硬性限制: `max_tool_calls` 防止过多调用
-- 超时/异常时强制生成最终答案
+原自研 Think-Act-Observe 循环，已由 `orchestrator/worker_runner.py`（LangGraph react agent）替代，迁移记录见第 13 章。
 
 #### core/state_manager.py - 状态管理
 
@@ -298,9 +301,10 @@ ROUTE_SIMPLE_MAX_LEN=30            # 简单问题长度阈值
 
 #### agents/base_agent.py - Agent基类
 
-- `BaseAgent(ABC)`: agent_id, config, llm_client, loop, skill_registry
+- `BaseAgent(ABC)`: agent_id, config, llm_client, skill_registry
 - 抽象方法: `get_system_prompt()`, `register_tools()`
-- Swarm协作: capabilities, shared_context, process_subtask()
+- 能力集: capabilities（供任务分解参考）
+- 工具调用循环由 orchestrator/worker_runner.WorkerRunner 驱动
 
 #### agents/skill_registry_mixin.py - 统一Skill注册
 
@@ -344,33 +348,49 @@ ROUTE_SIMPLE_MAX_LEN=30            # 简单问题长度阈值
 
 ---
 
-### 4.6 Swarm协调 (swarm/)
+### 4.6 多Agent编排 (orchestrator/)
 
-#### swarm/events.py - 事件系统
+基于 LangGraph StateGraph 的编排层，替代原自研 swarm/（迁移记录见第 13 章）。
 
-- `EventType` 枚举: SWARM_STARTED, TASK_DECOMPOSED, SUBTASK_STARTED 等
-- `Event` 数据类: type, source_agent, target_agent, data
+#### orchestrator/coordinator.py - 编排器主入口
 
-#### swarm/shared_context.py - 共享环境
+- `LangGraphOrchestrator.process(question, context, session_id)`：对外唯一入口
+- 任务分解：LLM 输出 JSON（优先 1 个子任务，最多 3 个），解析失败回退单 Agent 默认分解
+- 综合合成：汇总各 Worker 贡献，冲突时优先采信诊断/研究结论（max_tokens=2048）
+- 简单问题路由（请求级 contextvar）、统一异常兜底（system_error）
+- 后处理 `_postprocess`：飞轮维度 + 医疗安全硬约束改写 + 异步审核入队
 
-- `SharedContext`: 黑板系统, 所有Agent可读写
-- `SubTask` 数据类: id, type, description, assigned_agent, status
-- `Contribution` 数据类: agent_id, subtask_id, result
-- 任务管理: add_subtask(), get_subtasks_for_agent(), complete_subtask()
+#### orchestrator/graph.py - StateGraph 编排图
 
-#### swarm/lead_agent.py - Lead Agent
+图结构：`START → load_context → decompose → (Send fan-out) worker → finalize_single / finalize_failed / synthesize → postprocess → save_memory → END`
 
-- `assess_and_decompose()`: LLM分析问题 -> 分解子任务 -> 分配Agent
-- `create_subtasks()`: 创建SubTask并发布到SharedContext
-- `synthesize_results()`: 汇总所有Agent贡献 -> LLM生成最终答案
+- `load_context`: 短期+长期记忆检索（失败降级）
+- `decompose`: 任务分解与模式判定（单任务/多任务）
+- 条件边 Send 并行派发：每个子任务一个分支，worker_results 用 reducer 合并
+- 全 Worker 失败兜底：`all_workers_failed`（跳过 LLM 综合，直接结构化兜底）
+- Worker 超时 75s / 全图超时 120s
 
-#### swarm/swarm_coordinator.py - Swarm入口
+#### orchestrator/worker_runner.py - Worker 执行器
 
-- 智能路由: 1个子任务->单Agent, 2+个子任务->Swarm
-- 统一记忆检索: 短期记忆(会话历史) + 长期记忆(相似案例)
-- Worker并行执行, 90秒超时
-- 结果汇总 + 记忆保存
-- 便捷函数: `process_with_swarm()`
+- `WorkerRunner`: `create_react_agent` 承载单个 Worker 的工具调用循环
+- 横切关注点：max_tool_calls 工具预算、约束校验+自动修复、短期记忆注入/回写、实时/异步专家审核、post_process_result 后处理
+- 递归上限兜底：超限后不带工具强制生成最终答案（warning=max_iterations_reached）
+- 输出结构与原 AgentLoop 一致：`{answer, agent_id, skills_used, warning?}`
+
+#### orchestrator/llm_adapter.py - LLM 适配器
+
+- `LLMChatModel(BaseChatModel)`: 把 core/llm_client.LLMClient 包装为 langchain 模型
+- 模型调用仍经 LLMClient.chat_with_tools_retry 下发，大小模型路由(contextvar)/熔断/3次重试对 LangGraph 透明生效
+- 工具 schema 以 OpenAI dict 格式直接透传（`_medical_openai_tool`），不经 langchain 格式转换，规避供应商兼容性差异
+
+#### orchestrator/tools.py - 工具适配
+
+- `build_langchain_tools()`: SkillRegistry → langchain StructuredTool（Pydantic args_schema 自动生成）
+- `ToolCallBudget`: max_tool_calls 硬限制 + skills_used 去重记录
+
+#### orchestrator/factory.py - 编排器工厂
+
+- `build_orchestrator()`: 统一组装入口（LLMClient + 3 个默认 Worker + 可选记忆），web/main.py/评估模块共用
 
 ---
 
@@ -414,13 +434,13 @@ ROUTE_SIMPLE_MAX_LEN=30            # 简单问题长度阈值
 
 #### main.py - 交互式对话入口
 
-- 交互式命令行, 调用 `process_with_swarm()`
-- 显示协作模式/执行时间/建议/免责声明
+- 交互式命令行, 经 `orchestrator.build_orchestrator()` 构建编排器（构建失败回退基础 LLM 模式）
+- 显示执行时间/建议/免责声明
 
 #### examples/test_all.py - 测试套件
 
-- 核心功能测试: Agent Loop, Skill调用, 记忆系统, Swarm协作
-- 约束系统测试: 验证/修复
+- 核心功能测试: Skill调用, 状态管理, 记忆系统, 约束验证/修复
+- 编排层测试见 tests/test_langgraph_orchestrator.py 与 tests/test_worker_runner.py
 
 ## 5. 关键设计决策
 
@@ -502,7 +522,7 @@ async def run_evaluation(dimensions: List[str] = None, report_format: str = "con
 
 ### 4.11 专家审核系统 (review/)
 
-支持实时审核（同步阻塞）和异步审核（事后处理）两种模式。**审核队列必须使用进程级单例 `get_default_queue()`**：实时审核的等待事件保存在队列实例内存中，提问方（chat_tab/agent_loop/swarm）与专家审核方（review_tab）共享同一实例，专家操作才能跨线程唤醒等待协程。
+支持实时审核（同步阻塞）和异步审核（事后处理）两种模式。**审核队列必须使用进程级单例 `get_default_queue()`**：实时审核的等待事件保存在队列实例内存中，提问方（chat_tab/worker_runner/orchestrator）与专家审核方（review_tab）共享同一实例，专家操作才能跨线程唤醒等待协程。
 
 #### review/review_trigger.py - 审核触发判断
 
@@ -583,13 +603,13 @@ async def run_evaluation(dimensions: List[str] = None, report_format: str = "con
 
 - `create_app()`: 创建 `gr.Blocks` 应用，组装 3 个 Tab（💬 对话 / 🔍 专家审核 / 📊 飞轮指标）
 - 紫色系自定义主题（`gr.themes.Soft`）+ 自定义 CSS + 暗色模式 JS
-- 启动时初始化 Swarm 系统并后台预热知识库嵌入模型，避免首个提问长等待
+- 启动时初始化多Agent编排系统并后台预热知识库嵌入模型，避免首个提问长等待
 
 #### web/chat_tab.py - 用户对话界面
 
 - `gr.Chatbot(type="messages")` 对话历史展示，配置用户/AI 头像（`web/assets/`）
 - **流式打字机输出**：发送后先显示"🤔 思考中"占位，答案就绪后按固定步长逐段累加渲染（详见第 9 章）
-- 调用 `SwarmCoordinator.process()` 处理问题；懒初始化 Swarm 系统（Agents + Coordinator + 记忆单例）
+- 调用编排器 `process()` 处理问题；懒初始化多Agent系统（经 build_orchestrator 工厂组装 Worker + 编排器 + 记忆单例）
 - 显示执行耗时 + 建议 + 免责声明；错误提示去技术化（完整堆栈仅入日志）
 - "🚩 标记有误" 按钮 → `ReviewQueue.enqueue_async(reason="user_flag")`，返回审核编号
 - "🧹 重置会话" 按钮 → 后台 LLM 生成会话摘要写入长期记忆，生成新 session_id
@@ -1087,3 +1107,100 @@ ROUTE_SIMPLE_MAX_LEN=30          # 简单问题长度阈值
 ### 11.4 实施中发现并修复的缺陷
 
 **环境变量后端初始化失效（已修复）**：首轮实施将构造参数默认值改为 None 后，`__init__` 内仍以构造参数（而非解析后的 `self.backend`）判断是否执行 `_init_redis`——`MEMORY_BACKEND=redis` 时 backend 字符串为 redis 但 Redis 客户端为 None，数据静默落入进程内存且无任何报错（单测因手动注入客户端未拦截，实机验证拦截）。已修复判断依据，并补回归测试 `test_env_backend_redis_actually_inits_connection`（用不可达端口断言环境变量路径真正执行了连接初始化与失败回退）。
+
+## 12. Redis 三类防护：大 key / 并发 / 雪崩（2026-09-07，已实施完成并验证）
+
+### 12.1 背景与问题
+
+第 11 章接入的 Redis 短期记忆为"整个会话 JSON 序列化为单个 STRING 键"（`stm:{id}`），存在三类生产级隐患：
+
+| # | 问题 | 现状风险 |
+|---|------|---------|
+| 1 | **大 key**：整段对话历史存一个 STRING，LLM 单条回复可达数十 KB、50 条清理线前无上限；每追加一条消息全量重写整个值 | 值随对话线性膨胀，读写/删除均为 O(N)；DEL 同步释放阻塞主线程；`KEYS` 遍历全库阻塞 Redis |
+| 2 | **并发无保护**：`add_message` 为 get→modify→set，无任何锁 | 同会话并发写丢更新（last-writer-wins）；全仓库无互斥重建机制，热点缓存失效瞬间会击穿下游 |
+| 3 | **雪崩无防护**：全部键固定 TTL 86400s 无抖动；客户端无 socket 超时 | 批量键同时过期集中回源；Redis 挂起时每个请求永久阻塞（无超时）；运行期故障无熔断，反复失败 |
+
+### 12.2 实施方案
+
+**通用防护组件 `core/redis_guard.py`（新增）**：`RedisLock`（SET NX PX + Lua CAS 释放的分布式锁）、`singleflight_get_or_build`（缓存 miss 互斥重建：赢家构建、输家轮询等待、超时直建兜底）、`jittered_ttl`（TTL 随机抖动）、`get_shared_client`（带 socket 超时/健康检查的共享客户端，不可用时返回 None 全部降级直通）。
+
+**短期记忆 HASH 改造 `memory/short_term.py`**：
+
+| 防护 | 机制 |
+|------|------|
+| 大 key | 键结构 `stm:{id}` STRING → `stm2:{id}` HASH（`meta` + `seq` 计数器 + `first` + `msg:000001...` 按消息拆 field）；追加 O(1) 不再全量重写；单条上限 `STM_MAX_MESSAGE_CHARS`（默认 32000 字符，超限截断+标记）；超阈值 zlib+base85 压缩（`z:` 前缀，阈值 `STM_COMPRESS_THRESHOLD` 默认 8192B）；删除用 UNLINK 异步释放；遍历用 SCAN 替代 KEYS；`get_history(limit)` 只 HGET 最近 N 个 field |
+| 并发 | 追加走 `HINCRBY` 原子取号（天然并发安全，无读-改-写）；重写类操作（熵自动清理、旧格式迁移）持进程内会话 RLock + RedisLock 双层锁；熵清理重写用"续号写入+旧区间删除"，与并发追加序号天然错开 |
+| 雪崩 | 每次 EXPIRE 附加 `[0, TTL×10%]` 随机抖动（`STM_TTL_JITTER_RATIO`）；客户端 `socket_connect_timeout/socket_timeout`（`REDIS_SOCKET_TIMEOUT` 默认 2s）+ `health_check_interval=30`；运行期连续 3 次连接类失败进入 30s 熔断窗口（降级进程内存，读写不中断），窗口结束探活恢复并把降级期间的消息回写 Redis |
+| 兼容 | 旧 `stm:` STRING 键读/写路径懒迁移为 HASH（持锁+双重检查，幂等），迁移后 UNLINK 旧键；存量键 24h TTL 自然过期兜底 |
+
+**知识库检索缓存 `knowledge/milvus_kb.py`**（击穿/雪崩防护的真实落地点：向量检索+重排是当前最贵查询）：`search()` 拆为缓存包装层 + `_search_uncached()`；缓存键 `kb:search:g{世代号}:{query|top_k|doc_type|重排配置 指纹}`，TTL `KB_SEARCH_CACHE_TTL`（默认 300s）+ 抖动；miss 经 singleflight 互斥重建；`add_documents`/`delete_by_source`/`delete_collection` 末尾自动 INCR 世代号即时失效（旧世代键靠 TTL 自然淘汰，无需 SCAN 清理）；top_k>20 不缓存（防大 key）；Redis 不可用或开关关闭时直通检索，行为与无缓存完全一致。
+
+**配置**：`STM_MAX_MESSAGES`（默认 50，超出裁剪最旧）、`STM_MAX_MESSAGE_CHARS`、`STM_TTL_JITTER_RATIO`（0-1）、`STM_COMPRESS_THRESHOLD`、`REDIS_SOCKET_TIMEOUT`（0.1-60）、`KB_SEARCH_CACHE_ENABLED`（默认 true）、`KB_SEARCH_CACHE_TTL`（正整数）；`core/config.py` 增加数值/布尔/范围校验与摘要输出，`.env.example` 补充带注释模板。
+
+**旧版 Redis 兼容**：本机实测 Redis 为 3.0.504（Windows 版），据此做了两处兼容——`safe_unlink` 优先 UNLINK、旧版（<4.0）报 unknown command 时回退 DEL；迁移写入不用 `HSET key mapping` 多字段形式（4.0+ 才支持），逐字段 HSET。SCAN/HINCRBY/SET NX PX/EVAL 均为 2.x 即支持的命令，直接使用。
+
+### 12.3 实施与验证结果
+
+| 验证点 | 结果 |
+|--------|------|
+| 防护组件（`tests/test_redis_guard.py`，14 项） | 锁互斥/token 安全释放/等待获取；singleflight 并发 6 线程 builder 仅执行 1 次、锁被持时直建兜底不回写；TTL 抖动上下界；UNLINK 优先与旧版 DEL 回退；不可达 Redis 共享客户端返回 None |
+| 短期记忆（`tests/test_short_term_memory.py`，22 项） | 8 线程×25 条并发追加 200 条零丢失、序号 1-200 连续无覆盖；60 条裁剪至最近 50 条（first 前移）；500 字符截断到上限+标记；压缩往返无损；旧 STRING 读写两路径懒迁移；运行期故障 3 次失败→熔断内存读写不中断→恢复回写全量有序 |
+| 检索缓存（`tests/test_kb_search_cache.py`，7 项） | 相同查询第二次不触发底层检索；top_k/doc_type 参数隔离；世代号 INCR 后失效重建；TTL 含抖动；Redis 不可用/开关关闭/top_k 超限三种直通路径行为与无缓存一致 |
+| 真实 Redis 冒烟（本机 3.0.504，db 15 隔离，结束后清空） | HASH 读写一致；TTL 抖动生效（86400 基数实测 90655）；limit 只读最近 N 条；压缩往返无损（900 字符→165）；6 线程×20 条并发 120 条零丢失、seq 连续；180 条总量硬裁剪保留最近 50 条（first=131）；熵自动清理整表重写在真实库正确执行（121→11 条）；旧 STRING 懒迁移+旧键 DEL 回退删除；SCAN 列举与清理；RedisLock EVAL 脚本可用 |
+| 兼容性 | `MEMORY_BACKEND=memory` 路径零影响；无 Redis 环境检索行为不变；全部单元测试不依赖真实 Redis |
+| 全量回归 | `pytest tests/` 全部通过（含新增 43 项：防护组件 14 + 记忆 22 + 检索缓存 7） |
+
+## 13. 多Agent编排框架迁移：自研 Swarm → LangGraph（2026-09-08，已实施完成并验证）
+
+### 13.1 背景与目标
+
+原多Agent编排为自研实现（swarm/ 包：SwarmCoordinator 中心化调度 + LeadAgent LLM 分解/综合 + SharedContext 黑板 + 自研 core/agent_loop.py 工具循环）。为获得主流框架的编排能力与生态（流式、可观测、interrupt 人机协作等演进空间），将编排层与工具循环迁移至 LangGraph，同时**完整保留**项目的医疗安全行为与既有基础设施。
+
+### 13.2 组件映射
+
+| 原自研组件 | LangGraph 替代 | 说明 |
+|-----------|---------------|------|
+| swarm/swarm_coordinator.py | orchestrator/coordinator.py + graph.py | 编排入口与图结构，`process()` 签名与返回字段不变 |
+| swarm/lead_agent.py（分解/综合） | coordinator 的 `_decompose`/`_synthesize` | 提示词与 JSON 解析兜底原样迁移 |
+| swarm/shared_context.py（黑板） | state.py 的图状态 + reducer | worker_results 用 operator.add 合并；swarm_summary 字段保持同形状 |
+| swarm/events.py（事件系统） | 未迁移 | 仅内部调试用途，删除（swarm_summary 中 total_events 恒为 0） |
+| core/agent_loop.py（工具循环） | orchestrator/worker_runner.py | create_react_agent + 横切关注点移植 |
+| （无） | orchestrator/llm_adapter.py | LLMClient→langchain 适配，路由/熔断/重试全保留 |
+| （无） | orchestrator/tools.py | Skill→StructuredTool + ToolCallBudget |
+| SwarmCoordinator 构造点 | orchestrator/factory.py | build_orchestrator() 统一组装 |
+
+### 13.3 关键设计决策
+
+- **LLM 出口不变**：所有模型调用仍收敛于 core/llm_client.py（大小模型路由 contextvar、熔断器、3 次指数退避重试），通过 LLMChatModel 适配器对 LangGraph 透明生效；工具 schema 以 OpenAI dict 格式直接透传，不经 langchain 格式转换，规避供应商（DashScope qwen）兼容性风险
+- **医疗安全行为保持**：紧急硬约束改写（emergency_hard_constraint）、实时/异步专家审核（进程级单例队列 + call_soon_threadsafe 跨线程唤醒）、约束校验 + AutoFixer、max_tool_calls=2 工具预算、全 Worker 失败兜底（all_workers_failed）、system_error 统一异常兜底——逐项移植并有对应测试
+- **超时体系**：Worker 单体 75s（wait_for）+ 全图 120s（外层 wait_for），原 90s 集中超时拆分为两级
+- **依赖边界**：仅引入 langgraph + langchain-core（不引入完整 langchain）；requirements 上界 `<2.0.0`（create_react_agent 在 langgraph 2.0 将移除）
+- **灰度切换后已删除旧实现**：实施时先以 AGENT_FRAMEWORK 开关灰度共存，验证通过后删除 swarm/ 与 agent_loop.py（本节记录的是最终状态）
+
+### 13.4 行为差异（有意为之）
+
+| 差异点 | 说明 |
+|--------|------|
+| 短期记忆写入 | 原 AgentLoop 双写 assistant 消息（循环内 + coordinator 保存段），现单 Agent 模式仅 WorkerRunner 写一次，不再重复 |
+| 事件系统 | swarm 事件（SWARM_STARTED 等）未迁移，total_events 恒为 0 |
+| 评估工具链 | agent_eval 的 tool_calls 从中间结果遍历改为 skills_used（去重名单），iterations 为实际调用次数 |
+| consult/diagnose/research 便捷函数 | 改经 WorkerRunner（原先经 BaseAgent.process→AgentLoop） |
+
+### 13.5 实施与验证结果
+
+| 验证点 | 结果 |
+|--------|------|
+| 编排契约测试（tests/test_langgraph_orchestrator.py，12 项） | 复刻原 test_swarm_pipeline.py 全部 5 个行为契约（全失败兜底/system_error/硬约束改写/不改写/普通透传）+ 单Agent跳过综合/Send 并行派发/Worker 超时/未知 Agent 回退/react 端到端/工具预算/contextvar 并行传播 |
+| Worker 安全契约（tests/test_worker_runner.py，4 项） | 移植原 test_agent_loop.py：高危强制实时审核、专家修正替换回答、skills_used 追踪、普通问题不入审核 |
+| 全量回归 | pytest 152 项通过（迁移期）；删除旧实现后 147 项全绿（152 − 旧 9 项 + 新 4 项） |
+| 真实 LLM 端到端 | 单Agent 4.2s；多Agent 3 子任务并行+综合 97.3s；高危就医引导；多轮记忆（Redis）；RAG 知识库检索（disease_code→I10）；consult() 便捷函数 |
+| Web/CLI 冒烟 | Gradio 启动 HTTP 200（LangGraphOrchestrator + Redis 记忆初始化）；CLI 问答+退出正常 |
+| 手工套件 | examples/test_all.py 6/6（移除依赖 swarm 的 2 项失效测试） |
+| 评估模块 | SwarmEvaluator/AgentEvaluator 经工厂构建正常，agent_eval._run_agent 走 WorkerRunner |
+
+### 13.6 配套清理（同日完成）
+
+- 删除：swarm/（5 文件）、core/agent_loop.py、tests/test_swarm_pipeline.py、tests/test_agent_loop.py
+- BaseAgent 移除 loop/process/run_loop/attach_*/process_subtask 遗留接口；consult/diagnose/research 便捷函数迁移
+- main.py CLI、web/chat_tab.py、evaluation/{agent,swarm,performance}_eval.py 全部改经 build_orchestrator()
+- 同日修复 Web 深色主题下 secondary 按钮/输入框白底浅字不可读问题（Gradio 6 CSS 变量级覆盖 + 双选择器保底，对比度 1.1→12.5）

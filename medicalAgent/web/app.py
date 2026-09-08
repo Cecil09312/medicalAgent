@@ -25,6 +25,34 @@ CUSTOM_CSS = """
 /* 隐藏 Gradio 自带 footer */
 footer {display: none !important;}
 
+/* ============ 组件级深色统一(治本) ============
+   页面深色外观由下方硬编码 CSS 提供,但 Gradio 6 的 secondary 按钮/
+   输入框/表格默认仍是浅色填充,且 elem_classes 落在组件外层容器上,
+   内层 <button>/<textarea> 不继承自定义背景 —— 通过覆盖 Gradio 的
+   CSS 设计变量,把所有交互组件统一为深色玻璃风,避免浅底浅字融合 */
+:root, body, .gradio-container, .dark, .dark .gradio-container {
+    --body-text-color: #D1D5DB !important;
+    --body-text-color-subdued: #9CA3AF !important;
+    --block-background-fill: rgba(30, 36, 48, 0.75) !important;
+    --block-border-color: rgba(139, 124, 240, 0.18) !important;
+    --block-label-text-color: #9CA3AF !important;
+    --button-secondary-background-fill: rgba(30, 36, 48, 0.88) !important;
+    --button-secondary-background-fill-hover: rgba(40, 48, 64, 0.95) !important;
+    --button-secondary-text-color: #E5E7EB !important;
+    --button-secondary-text-color-hover: #FFFFFF !important;
+    --button-secondary-border-color: rgba(139, 124, 240, 0.25) !important;
+    --input-background-fill: rgba(18, 22, 31, 0.92) !important;
+    --input-background-fill-focus: rgba(24, 29, 40, 0.95) !important;
+    --input-text-color: #E5E7EB !important;
+    --input-placeholder-color: #6B7280 !important;
+    --input-border-color: rgba(139, 124, 240, 0.25) !important;
+    --table-even-background-fill: rgba(30, 36, 48, 0.5) !important;
+    --table-odd-background-fill: rgba(24, 29, 40, 0.5) !important;
+    --table-border-color: rgba(139, 124, 240, 0.15) !important;
+    --border-color-primary: rgba(139, 124, 240, 0.25) !important;
+    --shadow-drop: 0 4px 16px rgba(0, 0, 0, 0.25) !important;
+}
+
 /* 深色科技感背景：深蓝黑渐变 + 紫粉光晕 */
 body, gradio-app {
     background:
@@ -62,9 +90,9 @@ body, gradio-app {
 #medix-header p {color: #9CA3AF !important; font-size: 0.95rem !important; margin: 0 !important;}
 #medix-header h1, #medix-header p {text-align: center !important;}
 
-/* Tab 导航 */
+/* Tab 导航(Gradio 6 的激活态由主题默认紫色渲染,对比度 AA 达标) */
 .gradio-container .tab-nav {border-bottom: 1px solid rgba(139, 124, 240, 0.2) !important; margin-bottom: 18px !important; gap: 4px !important;}
-.gradio-container .tab-nav button {font-size: 0.98rem !important; font-weight: 500 !important; padding: 10px 18px !important; border-radius: 8px 8px 0 0 !important;}
+.gradio-container .tab-nav button {font-size: 0.98rem !important; font-weight: 500 !important; padding: 10px 18px !important; border-radius: 8px 8px 0 0 !important; color: #9CA3AF !important;}
 
 /* 深色玻璃卡片 */
 .medix-card {
@@ -77,8 +105,11 @@ body, gradio-app {
     color: #D1D5DB !important;
 }
 
-/* 快速提问卡片：深色 + 悬浮发光 */
-.medix-quick-btn {
+/* 快速提问卡片：深色 + 悬浮发光
+   选择器同时匹配类落在组件根或外层容器两种结构(elem_classes 在
+   Gradio 6 中可能位于 wrapper,内层 <button> 需单独覆盖) */
+.medix-quick-btn,
+.medix-quick-btn button {
     background: rgba(30, 36, 48, 0.85) !important;
     border: 1px solid rgba(139, 124, 240, 0.25) !important;
     border-radius: 14px !important;
@@ -86,8 +117,10 @@ body, gradio-app {
     color: #E5E7EB !important;
     transition: all 0.2s ease !important;
 }
-.medix-quick-btn:hover {
+.medix-quick-btn:hover,
+.medix-quick-btn:hover button {
     border-color: rgba(167, 139, 250, 0.6) !important;
+    color: #FFFFFF !important;
     transform: translateY(-2px);
     box-shadow: 0 6px 20px rgba(139, 124, 240, 0.25) !important;
 }
@@ -107,7 +140,7 @@ body, gradio-app {
 /* 免责声明 */
 #medix-disclaimer {
     text-align: center !important;
-    color: #6B7280 !important;
+    color: #9CA3AF !important;
     font-size: 0.82rem !important;
     padding: 14px 0 4px !important;
     margin-top: 18px !important;
@@ -144,8 +177,10 @@ body, gradio-app {
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28) !important;
 }
 
-/* 气泡内文字行距优化 */
+/* 气泡内文字行距优化;Markdown 次要文字(引用/表尾注)提亮保可读 */
 .medix-chatbot .message {line-height: 1.7 !important;}
+.medix-chatbot .message blockquote,
+.medix-chatbot .message table {color: #C7CDD6 !important;}
 """
 
 # 自定义主题：紫色系

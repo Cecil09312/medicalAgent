@@ -1,12 +1,12 @@
 {
   "current": {
     "timestamp": 1788590414.3884385,
-    "total_queries": 14,
+    "total_queries": 16,
     "total_reviews": 1,
     "total_corrections": 0,
     "total_approvals": 1,
     "total_rejections": 0,
-    "intervention_rate": 0.07142857142857142,
+    "intervention_rate": 0.0625,
     "correction_rate": 0.0,
     "avg_review_time_seconds": 0.002092599868774414,
     "kb_expert_docs": 0,
@@ -25,6 +25,24 @@
       "avg_review_time_seconds": 0.002092599868774414,
       "kb_expert_docs": 0,
       "eval_cases_from_flywheel": 0
+    },
+    {
+      "timestamp": 1788832089.958042,
+      "total_queries": 15,
+      "total_reviews": 1,
+      "total_corrections": 0,
+      "total_approvals": 1,
+      "total_rejections": 0,
+      "intervention_rate": 0.06666666666666667,
+      "correction_rate": 0.0,
+      "avg_review_time_seconds": 0.002092599868774414,
+      "kb_expert_docs": 0,
+      "eval_cases_from_flywheel": 0
     }
-  ]
+  ],
+  "dimensions": {
+    "disease_category": {},
+    "skill_name": {},
+    "agent_type": {}
+  }
 }

@@ -63,8 +63,12 @@ _NUMERIC_ENVS = {
     "KB_TOP_K": ("知识库检索条数", 5),
     "REVIEW_REALTIME_TIMEOUT": ("实时审核超时秒数", 15),
     "STM_SESSION_TTL_SECONDS": ("短期记忆过期秒数", 86400),
+    "STM_MAX_MESSAGES": ("短期记忆单会话消息上限", 50),
+    "STM_MAX_MESSAGE_CHARS": ("短期记忆单条消息字符上限", 32000),
+    "STM_COMPRESS_THRESHOLD": ("短期记忆消息压缩阈值(字节)", 8192),
     "REDIS_PORT": ("Redis 端口", 6379),
     "REDIS_DB": ("Redis DB 编号", 0),
+    "KB_SEARCH_CACHE_TTL": ("知识库检索缓存秒数", 300),
 }
 
 # 布尔型配置项：环境变量名 -> (说明, 默认值)
@@ -72,6 +76,7 @@ _BOOL_ENVS = {
     "REVIEW_REALTIME_ENABLED": ("实时专家审核", "true"),
     "ROUTE_LLM_CLASSIFY_ENABLED": ("二级 LLM 路由分类", "false"),
     "RERANK_ENABLED": ("CrossEncoder 重排序", "false"),
+    "KB_SEARCH_CACHE_ENABLED": ("知识库检索缓存", "true"),
 }
 
 _TRUE_SET = ("1", "true", "yes", "on")
@@ -138,6 +143,30 @@ def validate_config() -> List[str]:
         except ValueError:
             pass  # 格式错误已由数值校验报告
 
+    # 4.2 Redis 防护参数（浮点范围）
+    for name, label, lo, hi in (
+        ("STM_TTL_JITTER_RATIO", "短期记忆 TTL 抖动比例", 0.0, 1.0),
+        ("REDIS_SOCKET_TIMEOUT", "Redis socket 超时秒数", 0.1, 60.0),
+    ):
+        raw = _env(name)
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            errors.append(f"{name}={raw!r} 不是有效数字（{label}，范围 [{lo}, {hi}]）")
+            continue
+        if not (lo <= value <= hi):
+            errors.append(f"{name}={raw!r} 超出范围 [{lo}, {hi}]（{label}）")
+
+    # 4.3 检索缓存 TTL 必须为正（0 会导致写入非法的 ex 参数）
+    if _env("KB_SEARCH_CACHE_TTL"):
+        try:
+            if int(_env("KB_SEARCH_CACHE_TTL")) <= 0:
+                errors.append("KB_SEARCH_CACHE_TTL 必须为正整数（知识库检索缓存秒数）")
+        except ValueError:
+            pass  # 格式错误已由数值校验报告
+
     # 5. 边界合理性
     try:
         low = int(_env("ROUTE_LLM_BOUNDARY_MIN", "15"))
@@ -173,6 +202,11 @@ def build_config_summary() -> str:
         f"超时 {_env('REVIEW_REALTIME_TIMEOUT', '15')} 秒",
         f"  短期记忆后端:    {_env('MEMORY_BACKEND', 'memory') or 'memory'}，"
         f"会话 TTL {_env('STM_SESSION_TTL_SECONDS', '86400')} 秒（仅 redis 生效，0=永不过期）",
+        f"  Redis 防护:       TTL 抖动 {_env('STM_TTL_JITTER_RATIO', '0.1')}，"
+        f"单会话上限 {_env('STM_MAX_MESSAGES', '50')} 条 / "
+        f"单条 {_env('STM_MAX_MESSAGE_CHARS', '32000')} 字符",
+        f"  检索缓存:        {'开启' if _is_true('KB_SEARCH_CACHE_ENABLED', 'true') else '关闭'}，"
+        f"TTL {_env('KB_SEARCH_CACHE_TTL', '300')} 秒（Redis 不可用时自动直通）",
         f"  重排序:          {'开启' if _is_true('RERANK_ENABLED') else '关闭'}",
         f"  嵌入模型:        {_env('KB_EMBEDDING_MODEL', 'BAAI/bge-small-zh-v1.5')}",
     ]

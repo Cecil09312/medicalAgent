@@ -134,8 +134,6 @@ async def research(query: str, session_id: Optional[str] = None) -> Dict[str, An
         研究结果
     """
     agent = ResearchAgent()
-    input_data = {
-        'question': query,
-        'session_id': session_id
-    }
-    return await agent.process(input_data)
+    from orchestrator.worker_runner import WorkerRunner
+
+    return await WorkerRunner(agent).run(query, session_id)

@@ -1,11 +1,19 @@
-"""AgentLoop 集成测试（stub LLM，无真实 API）：审核集成、skills_used、专家实时修正"""
+"""WorkerRunner 集成测试（stub LLM，无真实 API）：审核集成、skills_used、专家实时修正
+
+安全契约:
+- 高危问题强制实时审核，超时转异步待办；AutoFixer 自动补齐免责声明
+- 专家在实时审核窗口内提交修正 → 返回修正后的回答
+- Skill 调用记录到 skills_used
+- 普通问题 + 采样率 0 → 不产生审核项
+"""
 import asyncio
 import json
 
 import pytest
 
-from core.agent_loop import AgentLoop
+from orchestrator.worker_runner import WorkerRunner
 from core.llm_client import LLMResponse, ToolCall
+from core.skill_registry import SkillRegistry, SkillParameter
 from review.review_queue import get_default_queue
 import review.review_queue as review_module
 from flywheel.metrics_tracker import FlywheelMetrics
@@ -26,6 +34,7 @@ def _isolated_review_and_metrics(monkeypatch, tmp_path):
 
 class _StubLLM:
     """按脚本返回的 LLM 客户端桩"""
+
     def __init__(self, scripted):
         self.scripted = list(scripted)
 
@@ -34,29 +43,20 @@ class _StubLLM:
             return self.scripted.pop(0)
         return LLMResponse(content="（默认回答）仅供参考。", tool_calls=[], finish_reason="stop")
 
-    def create_tool_message(self, tool_call_id, tool_name, result):
-        return {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name,
-                "content": json.dumps(result, ensure_ascii=False)}
-
 
 class _StubAgent:
     agent_id = "consultation_agent"
     config = {}
 
-    def __init__(self, llm):
+    def __init__(self, llm, skill_registry=None):
         self.llm_client = llm
+        self.skill_registry = skill_registry or SkillRegistry()
 
     def get_system_prompt(self):
         return "你是医疗助手"
 
-    def get_tools_for_llm(self):
-        return []
-
-    def format_user_input(self, d):
-        return d.get("question", str(d))
-
     async def execute_tool(self, tool_name, arguments):
-        return {"ok": True}
+        return await self.skill_registry.execute(tool_name, **arguments)
 
 
 def _final(text):
@@ -64,31 +64,30 @@ def _final(text):
 
 
 async def test_high_risk_question_forces_realtime_review(monkeypatch):
-    """高危问题 -> 强制实时审核，超时转异步待办；Agent 层自动补齐免责声明"""
+    """高危问题 -> 强制实时审核，超时转异步待办；Runner 层自动补齐免责声明"""
     monkeypatch.setenv("REVIEW_REALTIME_TIMEOUT", "0")
 
     llm = _StubLLM([_final("您注意休息即可，先在家观察看看。")])
-    result = await AgentLoop(max_iterations=3).run(
-        _StubAgent(llm), {"question": "我父亲突然胸痛伴大出汗"}
-    )
+    runner = WorkerRunner(_StubAgent(llm))
+    result = await runner.run("我父亲突然胸痛伴大出汗")
 
     # 强制实时审核已触发并超时转异步
     items = get_default_queue().get_pending()
     assert any(i.trigger_reason == "high_risk" and i.review_mode == "async" for i in items)
-    # Agent 层 AutoFixer 补齐免责声明，原文保留
+    # Runner 层 AutoFixer 补齐免责声明，原文保留
     assert "您注意休息即可，先在家观察看看。" in result["answer"]
     assert "免责声明" in result["answer"]
 
 
 async def test_expert_correction_replaces_answer(monkeypatch):
-    """专家在实时审核窗口内提交修正 -> AgentLoop 返回修正后的回答"""
+    """专家在实时审核窗口内提交修正 -> Runner 返回修正后的回答"""
     monkeypatch.setenv("REVIEW_REALTIME_TIMEOUT", "5")
 
     llm = _StubLLM([_final("可以先观察。")])
-    loop = AgentLoop(max_iterations=3)
+    runner = WorkerRunner(_StubAgent(llm))
 
     async def _run():
-        return await loop.run(_StubAgent(llm), {"question": "我父亲突然胸痛"})
+        return await runner.run("我父亲突然胸痛")
 
     task = asyncio.create_task(_run())
     await asyncio.sleep(0.2)  # 等待审核项入队
@@ -104,15 +103,27 @@ async def test_expert_correction_replaces_answer(monkeypatch):
 async def test_skills_used_tracked():
     """Skill 调用被记录到结果的 skills_used 字段"""
 
+    registry = SkillRegistry()
+
+    async def fake_search(query):
+        return {"answer": "感冒相关知识", "sources": []}
+
+    registry.register(
+        name="search_knowledge",
+        function=fake_search,
+        description="搜索医学知识库",
+        parameters=[SkillParameter(name="query", type="string", description="查询", required=True)],
+    )
+
     llm = _StubLLM([
         LLMResponse(content=None,
                     tool_calls=[ToolCall(id="t1", name="search_knowledge", arguments={"query": "感冒"})],
                     finish_reason="tool_calls"),
         _final("感冒建议多喝水休息。仅供参考。"),
     ])
-    result = await AgentLoop(max_iterations=3).run(
-        _StubAgent(llm), {"question": "感冒了怎么办"}
-    )
+    runner = WorkerRunner(_StubAgent(llm, skill_registry=registry))
+    result = await runner.run("感冒了怎么办")
+
     assert result["skills_used"] == ["search_knowledge"]
     assert result["answer"] == "感冒建议多喝水休息。仅供参考。"
 
@@ -123,5 +134,6 @@ async def test_normal_question_no_review(monkeypatch):
 
     before = len(get_default_queue().get_pending())
     llm = _StubLLM([_final("多喝水。以上内容仅供参考。")])
-    await AgentLoop(max_iterations=3).run(_StubAgent(llm), {"question": "感冒了怎么办"})
+    runner = WorkerRunner(_StubAgent(llm))
+    await runner.run("感冒了怎么办")
     assert len(get_default_queue().get_pending()) == before

@@ -1,12 +1,13 @@
 # 🏥 AI智能医疗诊断系统
 
-多智能体协作的医疗助手，集咨询、诊断、研究为一体。基于 Swarm 多智能体框架 + RAG 知识库检索 + 专家审核闭环 + 飞轮指标优化。
+多智能体协作的医疗助手，集咨询、诊断、研究为一体。基于 LangGraph 多智能体编排 + RAG 知识库检索 + 专家审核闭环 + 飞轮指标优化。
 
 ---
 
 ## ✨ 核心特性
 
-- **多智能体协作**：咨询 / 诊断 / 研究三类 Agent，由 LeadAgent 自动分解任务并汇总
+- **多智能体协作**：咨询 / 诊断 / 研究三类 Agent，由 LangGraph 编排图自动分解任务、并行执行并汇总
+- **Harness Engineering 工程护栏**：约束验证 + 输出自动修复 + 医疗安全硬约束 + 专家审核，贯穿任务分解到最终输出的全链路
 - **两阶段 RAG 检索**：向量召回（bge-small-zh-v1.5）→ CrossEncoder 精排（bge-reranker-base）
 - **专家审核闭环**：实时审核 / 异步抽样审核 / 用户标记纠错，支持批准、修正、拒绝
 - **飞轮自我优化**：记录查询、审核、修正指标，驱动知识库增强与 Prompt 优化
@@ -25,10 +26,9 @@ graph TB
         METRICS[飞轮指标标签页]
     end
 
-    subgraph Swarm["Swarm 协作层"]
-        COORD[SwarmCoordinator<br/>协调器]
-        LEAD[LeadAgent<br/>任务分解]
-        CTX[SharedContext<br/>共享上下文]
+    subgraph Orchestrator["LangGraph 编排层 (orchestrator/)"]
+        GRAPH[LangGraphOrchestrator<br/>StateGraph 编排图]
+        RUNNER[WorkerRunner<br/>React Agent 执行器]
     end
 
     subgraph Agents["智能体层"]
@@ -38,11 +38,10 @@ graph TB
     end
 
     subgraph Core["核心层"]
-        LOOP[AgentLoop<br/>工具调用循环]
+        LLM[LLMClient<br/>OpenAI 兼容客户端]
         REG[SkillRegistry<br/>技能注册表]
-        SM[StateManager<br/>状态管理]
         CB[CircuitBreaker<br/>熔断器]
-        ROUTER[ModelRouter<br/>模型路由]
+        ROUTER[ModelRouter<br/>大小模型路由]
     end
 
     subgraph Knowledge["知识层"]
@@ -61,17 +60,18 @@ graph TB
         OPT[PromptOptimizer<br/>Prompt 优化]
     end
 
-    CHAT --> COORD
-    COORD --> LEAD
-    LEAD --> CA & DA & RA
-    CA & DA & RA --> LOOP
-    LOOP --> REG
-    LOOP --> KB
+    CHAT --> GRAPH
+    GRAPH --> RUNNER
+    RUNNER --> CA & DA & RA
+    CA & DA & RA --> REG
+    RUNNER --> KB
     KB --> RERANK
-    COORD --> TRIGGER
+    LLM --> ROUTER
+    ROUTER --> CB
+    GRAPH --> TRIGGER
     TRIGGER --> QUEUE
     QUEUE --> REVIEW
-    COORD --> TRK
+    GRAPH --> TRK
     TRK --> ENH
     TRK --> OPT
 ```
@@ -84,41 +84,38 @@ graph TB
 sequenceDiagram
     participant U as 用户
     participant W as Web对话页
-    participant C as SwarmCoordinator
-    participant L as LeadAgent
-    participant A as 专业Agent
+    participant O as LangGraphOrchestrator
+    participant G as StateGraph 编排图
+    participant A as 专业Agent(React)
     participant K as 知识库RAG
     participant R as 审核系统
 
     U->>W: 输入医疗问题
-    W->>C: process(question, session)
+    W->>O: process(question, session)
+    O->>G: 记忆检索 → 任务分解(LLM JSON)
 
-    alt 简单问题
-        C->>A: 单Agent直接回答
-    else 复杂问题
-        C->>L: assess_and_decompose()
-        L->>L: 任务分解 + Agent选择
-        L-->>C: 子任务列表
-        C->>A: 多Agent并行执行
+    alt 简单问题(单子任务)
+        G->>A: 单Agent直接回答
+    else 复杂问题(多子任务)
+        G->>A: Send 并行派发多Agent
     end
 
     A->>K: 两阶段检索(召回+精排)
     K-->>A: Top-K 相关知识
-    A->>A: AgentLoop工具调用循环
-    A-->>C: 各Agent结果
-    C->>L: synthesize_results()
-    L-->>C: 汇总回答
+    A->>A: React 工具调用循环
+    A-->>G: 各Agent结果
+    G->>G: 综合合成(多Agent时)
 
-    C->>R: ReviewTrigger判定
+    G->>R: ReviewTrigger判定
     alt 实时审核开启且专家在线
         R->>R: 等待专家审核
-        R-->>C: 审核结果(批准/修正/拒绝)
+        R-->>G: 审核结果(批准/修正/拒绝)
     else 异步抽样 or 用户标记
         R->>R: 入队待审核
     end
 
-    C->>C: 记录飞轮指标
-    C-->>W: 最终回答
+    G->>G: 硬约束校验 + 记录飞轮指标
+    O-->>W: 最终回答
     W-->>U: 流式展示回答
 ```
 
@@ -145,30 +142,75 @@ flowchart LR
 
 ---
 
-## 🤖 Swarm 多智能体协作
+## 🤖 LangGraph 多智能体编排
 
 ```mermaid
 flowchart TD
-    START([用户问题]) --> JUDGE{复杂度判断}
-    JUDGE -->|简单| SINGLE[单 Agent 直出]
-    JUDGE -->|复杂| DECOMP[LeadAgent 任务分解]
+    START([用户问题]) --> CTX[load_context<br/>记忆检索]
+    CTX --> DECOMP[decompose<br/>LLM 任务分解 JSON]
+    DECOMP --> JUDGE{子任务数}
+    JUDGE -->|≤1| SINGLE[单 Worker 直出<br/>跳过综合]
+    JUDGE -->|≥2| FANOUT[Send 并行 fan-out]
 
-    DECOMP --> SUB1[子任务1: 健康咨询]
-    DECOMP --> SUB2[子任务2: 症状诊断]
-    DECOMP --> SUB3[子任务3: 指南研究]
+    FANOUT --> SUB1[子任务1: 健康咨询]
+    FANOUT --> SUB2[子任务2: 症状诊断]
+    FANOUT --> SUB3[子任务3: 指南研究]
 
     SUB1 --> CA[咨询 Agent]
     SUB2 --> DA[诊断 Agent]
     SUB3 --> RA[研究 Agent]
 
-    CA & DA & RA --> SYNC[结果汇总]
-    SINGLE & SYNC --> SYNTH[LeadAgent 综合合成]
-    SYNTH --> ANS([最终回答])
+    CA & DA & RA --> WR[WorkerRunner<br/>React 循环 + 工具预算 + 审核]
+    WR --> SYNC{有有效贡献?}
+    SYNC -->|否| FALLBACK[all_workers_failed<br/>兜底回答]
+    SYNC -->|是| SYNTH[synthesize 综合合成]
+    SINGLE & SYNTH & FALLBACK --> POST[postprocess<br/>硬约束改写 + 维度 + 异步审核]
+    POST --> SAVE[save_memory 记忆保存]
+    SAVE --> ANS([最终回答])
 
-    CA -.调用.-> S1[search_knowledge<br/>recommend_lifestyle]
-    DA -.调用.-> S2[assess_risk<br/>analyze_symptoms]
-    RA -.调用.-> S3[clinical_guideline<br/>deep_research]
+    WR -.调用.-> S1[search_knowledge<br/>recommend_lifestyle]
+    WR -.调用.-> S2[assess_risk<br/>analyze_symptoms]
+    WR -.调用.-> S3[clinical_guideline<br/>deep_research]
 ```
+
+---
+
+## 🛡️ Harness Engineering 工程护栏
+
+Harness Engineering 指在 LLM 外围构建**确定性的工程护栏**：用规则验证约束模型行为、自动修复违规输出、硬约束兜底安全底线——不依赖模型"自觉"，而是把医疗安全要求工程化地贯穿到任务分解、工具调用、输出生成、最终交付的每一环。
+
+```mermaid
+flowchart LR
+    Q[用户问题] --> V1[事前·任务分解约束<br/>子任务数≤3 / Agent选择规则]
+    V1 --> V2[事中·工具调用护栏<br/>allowed_tools白名单 / 工具预算]
+    V2 --> V3[事后·输出校验与自动修复<br/>免责声明 / 高危警告缺失自动补齐]
+    V3 --> V4[末端·医疗安全硬约束<br/>高危问题强制改写为就医引导]
+    V4 --> H{专家审核}
+    H -->|实时审核| E1[专家修正直接替换回答]
+    H -->|异步抽样| E2[入队复核 + 飞轮回流]
+    E1 --> A[最终回答]
+    E2 --> A
+
+    style V4 fill:#fde8e8
+    style A fill:#e8f5e9
+```
+
+### 全链路护栏清单
+
+| 阶段 | 机制 | 实现 | 行为 |
+|------|------|------|------|
+| 事前 | 任务分解约束 | `constraints/swarm_constraints.yaml` + `validator.validate_task_decomposition()` | 子任务数超过上限自动裁剪；高风险症状问题未分配诊断 Agent 时告警 |
+| 事前 | 工具调用约束 | `constraints/agent_constraints.yaml` + `validator.validate_tool_call()` | 每个 Agent 的 `allowed_tools` 白名单，越权调用记录告警 |
+| 事中 | 资源预算 | `orchestrator/tools.py` ToolCallBudget + WorkerRunner 递归上限 | 单次运行工具调用 ≤2 次（超限引导作答）、递归上限兜底、Worker 75s / 全图 120s 超时 |
+| 事后 | 输出校验 + 自动修复 | `validator.validate_output()` + `validation/auto_fixer.py` | 缺免责声明自动补齐、高危症状自动加就医提醒（可修复项自动修，不可修复项告警） |
+| 末端 | 医疗安全硬约束 | `constraints/emergency.py`（16 个高危关键词） | 胸痛/昏迷/休克等急症问题，回答未含就医引导时**强制改写**为标准就医话术，原文保留在 `reference_answer` 字段 |
+| 人在环路 | 专家审核 | `review/`（实时阻塞 + 异步抽样） | 高危/强制停止的回答阻塞等待专家修正（修正直接替换答案），常规回答按比例抽样入队复核 |
+
+### 设计原则
+
+- **验证不阻断、硬约束才阻断**：常规约束（白名单/输出格式）以告警和自动修复为主，保证可用性；仅医疗急症硬约束采取强制改写，守住安全底线
+- **护栏可配置**：全部约束规则在 `constraints/*.yaml` 声明式维护，无需改代码即可调整关键词、白名单和阈值
+- **修复留痕**：硬约束改写保留原始回答（`reference_answer`）、专家修正记录审核编号，所有干预可追溯
 
 ---
 
@@ -221,8 +263,8 @@ medicalAgent/
 ├── docker-entrypoint.sh    # 启动脚本（自动初始化知识库）
 ├── .env                    # 环境配置（含密钥，不提交）
 ├── agents/                 # 专业 Agent（咨询/诊断/研究）
-├── core/                   # 核心：AgentLoop、LLM、技能、状态、熔断
-├── swarm/                  # 多智能体协作：协调器、LeadAgent、共享上下文
+├── orchestrator/           # LangGraph 多智能体编排（编排图/WorkerRunner/工厂）
+├── core/                   # 核心：LLM 客户端、技能、状态、熔断、路由
 ├── knowledge/              # 知识库：Milvus Lite + 重排序器
 │   ├── data/documents/     # 医疗文档源
 │   └── scripts/            # 文档导入脚本
@@ -233,6 +275,7 @@ medicalAgent/
 ├── constraints/            # Agent 约束校验（YAML）
 ├── validation/             # 输出自动修复
 ├── evaluation/             # 评估：RAG/Agent/Swarm/性能
+├── scripts/                # 辅助脚本（端到端冒烟）
 └── web/                    # Gradio Web 界面
 ```
 

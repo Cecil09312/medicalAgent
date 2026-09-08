@@ -7,6 +7,10 @@ transformers>=4.41.0
 # Agent框架
 pydantic==2.10.0
 pydantic-settings==2.7.0
+# LangGraph 多Agent编排（orchestrator/ 包）
+# 上界 <2.0.0：create_react_agent 将在 langgraph 2.0 移除（迁移到 langchain.agents）
+langgraph>=1.0.0,<2.0.0
+langchain-core>=1.0.0
 
 # 记忆管理
 # mem0ai>=2.0.20：代码按 2.x 平台版 API 编写（search 的 filters 参数），0.1.x 不兼容
@@ -15,7 +19,8 @@ redis==5.2.0
 qdrant-client==1.12.0
 
 # 向量数据库（Milvus）
-pymilvus>=2.3.0
+# extra milvus_lite：pymilvus 3.x 起本地 db 模式依赖独立的 milvus-lite 包，缺它启动即报错
+pymilvus[milvus_lite]>=2.3.0
 
 # PDF 文档解析（知识库导入脚本使用）
 pypdf>=4.0.0

@@ -9,6 +9,7 @@ from core.redis_guard import (
     get_shared_client,
     jittered_ttl,
     reset_shared_client,
+    safe_unlink,
     singleflight_get_or_build,
 )
 from fake_redis import FakeRedis
@@ -149,6 +150,27 @@ class TestSingleflight:
 
         assert singleflight_get_or_build(None, "c:k", builder, ttl_seconds=60) == "raw"
         assert len(calls) == 1
+
+
+class TestSafeUnlink:
+    def test_prefers_unlink(self):
+        fake = FakeRedis()
+        fake.store["k1"] = "v"
+        assert safe_unlink(fake, "k1") == 1
+        assert "k1" in fake.unlinked
+        assert "k1" not in fake.store
+
+    def test_falls_back_to_del_on_old_redis(self):
+        """旧版 Redis(<4.0) 无 UNLINK 命令时回退 DEL"""
+        fake = FakeRedis()
+        fake.store["k1"] = "v"
+
+        def old_unlink(*keys):
+            raise RuntimeError("unknown command 'UNLINK'")
+
+        fake.unlink = old_unlink
+        assert safe_unlink(fake, "k1") == 1
+        assert "k1" not in fake.store
 
 
 class TestSharedClient:

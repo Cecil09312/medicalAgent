@@ -9,7 +9,8 @@
     "expert_correction": null,
     "expert_id": null,
     "created_at": 1788592819.1032279,
-    "reviewed_at": null
+    "reviewed_at": null,
+    "dimensions": null
   },
   {
     "id": "984601e0",
@@ -21,7 +22,8 @@
     "expert_correction": null,
     "expert_id": "test_expert",
     "created_at": 1788597004.927771,
-    "reviewed_at": 1788597004.9298637
+    "reviewed_at": 1788597004.9298637,
+    "dimensions": null
   },
   {
     "id": "d1ab09d9",
@@ -33,7 +35,8 @@
     "expert_correction": null,
     "expert_id": null,
     "created_at": 1788648689.9045095,
-    "reviewed_at": null
+    "reviewed_at": null,
+    "dimensions": null
   },
   {
     "id": "f04806f3",
@@ -45,7 +48,8 @@
     "expert_correction": null,
     "expert_id": null,
     "created_at": 1788648722.6623807,
-    "reviewed_at": null
+    "reviewed_at": null,
+    "dimensions": null
   },
   {
     "id": "6c7b4927",
@@ -57,7 +61,8 @@
     "expert_correction": null,
     "expert_id": null,
     "created_at": 1788648758.9996207,
-    "reviewed_at": null
+    "reviewed_at": null,
+    "dimensions": null
   },
   {
     "id": "2300fa22",
@@ -69,6 +74,20 @@
     "expert_correction": null,
     "expert_id": null,
     "created_at": 1788650009.7135558,
-    "reviewed_at": null
+    "reviewed_at": null,
+    "dimensions": null
+  },
+  {
+    "id": "ac1081cb",
+    "question": "基于用户潜在高血压背景，提供循证、可操作的饮食（如DASH模式）、运动、减盐、睡眠及压力管理建议。",
+    "original_answer": "### 回答  \n尽管本次知识库检索未能返回具体结果（显示“知识库暂不可用”），但基于当前国际权威循证实践（如美国心脏协会AHA、美国心脏病学会ACC及欧洲高血压学会ESH指南），针对潜在高血压人群，以下建议具有充分科学依据并具备高度可操作性：\n\n- **饮食（DASH模式）**：DASH（Dietary Approaches to Stop Hypertension）饮食强调富含钾、钙、镁和膳食纤维的食物，包括每日4–5份蔬菜、4–5份水果、2–3份低脂乳制品、全谷物为主食、限制红肉与添加糖。研究证实DASH饮食可使收缩压平均降低5–6 mmHg，舒张压降低3 mmHg（尤其联合限盐时效果更显著）。\n\n- **减盐（钠摄入控制）**：目标为每日钠摄入 ≤1,500 mg（约3.8 g食盐）。实际操作中可：① 不在餐桌上放盐罐；② 阅读食品标签，避免钠含量＞200 mg/份的加工食品（如挂面、酱料、罐头、即食汤）；③ 用香草、柠檬汁、蒜粉等替代盐调味。\n\n- **运动**：推荐每周≥150分钟中等强度有氧运动（如快走、游泳、骑自行车），或75分钟高强度运动；另加每周2次抗阻训练（如弹力带、自重深蹲）。运动可激活一氧化氮通路、改善血管内皮功能，使血压下降4–9 mmHg。\n\n- **睡眠**：保证每晚7–8小时高质量睡眠。睡眠不足（＜6小时）与交感神经亢进、肾素-血管紧张素系统激活相关，显著升高夜间及晨峰血压。建议固定入睡/起床时间、睡前1小时避免蓝光暴露、保持卧室黑暗凉爽。\n\n- **压力管理**：慢性心理应激通过HPA轴与交感神经系统持续激活升压。推荐每日10–15分钟正念呼吸（4-7-8呼吸法：吸气4秒→屏息7秒→呼气8秒），或每周3次渐进式肌肉放松训练。临床试验显示此类干预可降低收缩压3–5 mmHg。\n\n### 核心建议  \n1. **立即执行减盐行动**：从今日起停用餐桌盐罐，检查家中3种高频加工食品（如酱油、火腿肠、薯片）钠含量并替换为低钠版本。  \n2. **启动“微运动”习惯**：每天午休后快走15分钟（约1200步），连续坚持2周形成基础节奏，再逐步叠加至达标量。  \n3. **建立“睡眠锚点”**：每晚22:30启动“睡前仪式”（温水泡脚+5分钟腹式呼吸+纸质书阅读），不看手机，强化生物钟信号。\n\n### 参考来源  \n无  \n\n### 免责声明  \n以上信息仅供参考，不能替代专业医疗诊断。如有健康问题，请及时就医。",
+    "trigger_reason": "random_sample",
+    "review_mode": "async",
+    "status": "pending",
+    "expert_correction": null,
+    "expert_id": null,
+    "created_at": 1788830519.5779939,
+    "reviewed_at": null,
+    "dimensions": null
   }
 ]

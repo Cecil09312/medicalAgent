@@ -1,6 +1,6 @@
 """
 用户对话界面
-基于 Gradio Chatbot，调用 Swarm 系统处理问题
+基于 Gradio Chatbot，调用多Agent编排系统处理问题
 """
 import os
 import sys
@@ -18,7 +18,7 @@ _project_root = Path(__file__).parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-# 全局单例：Swarm 系统
+# 全局单例：多Agent编排系统
 _coordinator = None
 _short_term_memory = None
 # 长期记忆在 _get_coordinator() 中懒初始化；模块级先置 None，
@@ -27,7 +27,7 @@ _long_term_memory = None
 _session_id = str(uuid.uuid4())
 
 # 触发实时审核的高风险关键词：统一使用医疗安全硬约束的配置（constraints/emergency.py），
-# 与后端 AgentLoop / SwarmCoordinator 的判定口径保持一致
+# 与后端 WorkerRunner / 编排器的判定口径保持一致
 def _hit_emergency_keyword(text: str) -> bool:
     """检测文本是否命中高危症状关键词（硬约束配置统一维护）"""
     try:
@@ -65,7 +65,7 @@ WELCOME_MESSAGE = (
 
 
 def _get_coordinator():
-    """懒初始化 SwarmCoordinator（单例）"""
+    """懒初始化编排器（单例）"""
     global _coordinator, _short_term_memory
 
     if _coordinator is not None:
@@ -73,33 +73,22 @@ def _get_coordinator():
 
     try:
         from core.llm_client import LLMClient
-        from agents.consultation_agent import ConsultationAgent
-        from agents.diagnostic_agent import DiagnosticAgent
-        from agents.research_agent import ResearchAgent
-        from swarm.swarm_coordinator import SwarmCoordinator
+        from orchestrator.factory import build_orchestrator
         from memory.short_term import ShortTermMemory
 
         llm_client = LLMClient()
-
-        # 创建 Worker Agents
-        worker_agents = {
-            "consultation_agent": ConsultationAgent(llm_client=llm_client),
-            "diagnostic_agent": DiagnosticAgent(llm_client=llm_client),
-            "research_agent": ResearchAgent(llm_client=llm_client),
-        }
 
         # 短期记忆（后端由 .env 的 MEMORY_BACKEND 决定：memory / redis 持久化）
         _short_term_memory = ShortTermMemory()
         logger.info(f"短期记忆初始化完成 (backend={_short_term_memory.backend})")
 
-        # 创建协调器
-        _coordinator = SwarmCoordinator(
-            worker_agents=worker_agents,
+        # 创建编排器（LangGraph 多Agent编排，Worker Agent 集合由工厂统一组装）
+        _coordinator = build_orchestrator(
             llm_client=llm_client,
             short_term_memory=_short_term_memory,
         )
 
-        logger.info("SwarmCoordinator 初始化成功")
+        logger.info(f"编排器初始化成功 (type={type(_coordinator).__name__})")
 
         # 长期记忆（Mem0 云服务，不可用时自动降级本地存储）
         global _long_term_memory
@@ -134,7 +123,7 @@ def _get_coordinator():
 
         threading.Thread(target=_warmup_kb, daemon=True).start()
     except Exception as e:
-        logger.error(f"SwarmCoordinator 初始化失败: {e}")
+        logger.error(f"编排器初始化失败: {e}")
         _coordinator = None
 
     return _coordinator
