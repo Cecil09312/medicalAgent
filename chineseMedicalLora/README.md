@@ -1,4 +1,4 @@
-# chineseMedicalLora 🏥
+# 高效微调中文医疗问答 Chatbot 🏥
 
 基于 **Qwen2.5-7B-Instruct** + **QLoRA 4-bit**（Unsloth + TRL SFTTrainer）的中文医疗问答 Chatbot。
 
