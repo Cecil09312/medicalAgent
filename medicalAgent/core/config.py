@@ -73,7 +73,7 @@ _NUMERIC_ENVS = {
 
 # 布尔型配置项：环境变量名 -> (说明, 默认值)
 _BOOL_ENVS = {
-    "REVIEW_REALTIME_ENABLED": ("实时专家审核", "true"),
+    "REVIEW_REALTIME_ENABLED": ("实时专家审核", "false"),
     "ROUTE_LLM_CLASSIFY_ENABLED": ("二级 LLM 路由分类", "false"),
     "RERANK_ENABLED": ("CrossEncoder 重排序", "false"),
     "KB_SEARCH_CACHE_ENABLED": ("知识库检索缓存", "true"),
@@ -198,7 +198,7 @@ def build_config_summary() -> str:
         f"冷却 {_env('CIRCUIT_COOLDOWN_SECONDS', '60')} 秒",
         f"  简单问题路由:    长度阈值 {_env('ROUTE_SIMPLE_MAX_LEN', '30')}，"
         f"二级分类 {'开启' if _is_true('ROUTE_LLM_CLASSIFY_ENABLED') else '关闭'}",
-        f"  实时专家审核:    {'开启' if _is_true('REVIEW_REALTIME_ENABLED', 'true') else '关闭'}，"
+        f"  实时专家审核:    {'开启' if _is_true('REVIEW_REALTIME_ENABLED', 'false') else '关闭'}，"
         f"超时 {_env('REVIEW_REALTIME_TIMEOUT', '15')} 秒",
         f"  短期记忆后端:    {_env('MEMORY_BACKEND', 'memory') or 'memory'}，"
         f"会话 TTL {_env('STM_SESSION_TTL_SECONDS', '86400')} 秒（仅 redis 生效，0=永不过期）",

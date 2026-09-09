@@ -14,7 +14,8 @@ class ReviewTrigger:
 
     def __init__(self):
         """初始化，从环境变量读取配置"""
-        self.realtime_enabled = os.getenv("REVIEW_REALTIME_ENABLED", "true").lower() == "true"
+        # 默认关闭:与 .env.example/spec 口径一致(高风险走异步不阻塞回答),开启需显式置 true
+        self.realtime_enabled = os.getenv("REVIEW_REALTIME_ENABLED", "false").lower() == "true"
         self.async_sample_rate = float(os.getenv("REVIEW_ASYNC_SAMPLE_RATE", "0.05"))
 
         # 高风险关键词（触发实时审核）

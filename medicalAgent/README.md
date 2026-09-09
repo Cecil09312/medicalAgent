@@ -10,9 +10,9 @@
 - **Harness Engineering 工程护栏**：约束验证 + 输出自动修复 + 医疗安全硬约束 + 专家审核，贯穿任务分解到最终输出的全链路
 - **两阶段 RAG 检索**：向量召回（bge-small-zh-v1.5）→ CrossEncoder 精排（bge-reranker-base）
 - **专家审核闭环**：实时审核 / 异步抽样审核 / 用户标记纠错，支持批准、修正、拒绝
-- **飞轮自我优化**：记录查询、审核、修正指标，驱动知识库增强与 Prompt 优化
+- **飞轮自我优化**：记录查询、审核、修正指标（含疾病/技能/Agent 三维下钻），积累专家修正数据，支撑知识库增强与 Prompt 优化（增强组件已就绪，待接线自动回流）
 - **长期记忆**：Mem0 + Redis 短期记忆，支持上下文连续对话
-- **质量评估体系**：RAG / Agent性能 四维评估，支持 LLM-as-Judge
+- **质量评估体系**：RAG / Agent / Swarm / 性能 四维评估，支持 LLM-as-Judge
 
 ---
 
@@ -56,8 +56,8 @@ graph TB
 
     subgraph Flywheel["飞轮优化"]
         TRK[MetricsTracker<br/>指标记录]
-        ENH[KBEnhancer<br/>知识库增强]
-        OPT[PromptOptimizer<br/>Prompt 优化]
+        ENH[KBEnhancer<br/>知识库增强<br/>（待接线）]
+        OPT[PromptOptimizer<br/>Prompt 优化<br/>（待接线）]
     end
 
     CHAT --> GRAPH
@@ -72,8 +72,8 @@ graph TB
     TRIGGER --> QUEUE
     QUEUE --> REVIEW
     GRAPH --> TRK
-    TRK --> ENH
-    TRK --> OPT
+    TRK -.专家修正数据.-> ENH
+    TRK -.专家修正数据.-> OPT
 ```
 
 ---
@@ -107,9 +107,9 @@ sequenceDiagram
     G->>G: 综合合成(多Agent时)
 
     G->>R: ReviewTrigger判定
-    alt 实时审核开启且专家在线
-        R->>R: 等待专家审核
-        R-->>G: 审核结果(批准/修正/拒绝)
+    alt 实时审核开启(15s 超时自动转异步)
+        R->>R: 阻塞等待专家审核
+        R-->>G: 审核结果(批准/修正/拒绝,修正替换答案)
     else 异步抽样 or 用户标记
         R->>R: 入队待审核
     end
@@ -186,8 +186,8 @@ flowchart LR
     V2 --> V3[事后·输出校验与自动修复<br/>免责声明 / 高危警告缺失自动补齐]
     V3 --> V4[末端·医疗安全硬约束<br/>高危问题强制改写为就医引导]
     V4 --> H{专家审核}
-    H -->|实时审核| E1[专家修正直接替换回答]
-    H -->|异步抽样| E2[入队复核 + 飞轮回流]
+    H -->|实时审核| E1[专家修正直接替换回答<br/>15s 超时自动转异步]
+    H -->|异步抽样| E2[入队复核 + 指标记录]
     E1 --> A[最终回答]
     E2 --> A
 
@@ -204,7 +204,7 @@ flowchart LR
 | 事中 | 资源预算 | `orchestrator/tools.py` ToolCallBudget + WorkerRunner 递归上限 | 单次运行工具调用 ≤2 次（超限引导作答）、递归上限兜底、Worker 75s / 全图 120s 超时 |
 | 事后 | 输出校验 + 自动修复 | `validator.validate_output()` + `validation/auto_fixer.py` | 缺免责声明自动补齐、高危症状自动加就医提醒（可修复项自动修，不可修复项告警） |
 | 末端 | 医疗安全硬约束 | `constraints/emergency.py`（16 个高危关键词） | 胸痛/昏迷/休克等急症问题，回答未含就医引导时**强制改写**为标准就医话术，原文保留在 `reference_answer` 字段 |
-| 人在环路 | 专家审核 | `review/`（实时阻塞 + 异步抽样） | 高危/强制停止的回答阻塞等待专家修正（修正直接替换答案），常规回答按比例抽样入队复核 |
+| 人在环路 | 专家审核 | `review/`（实时阻塞 + 异步抽样） | 高危/敏感/强制停止的回答阻塞等待专家操作（修正直接替换答案），15s 超时自动转异步待办；常规回答按比例抽样入队复核 |
 
 ### 设计原则
 
@@ -291,7 +291,7 @@ medicalAgent/
 | `RERANK_ENABLED` | false | 是否开启两阶段重排 |
 | `RERANK_CANDIDATE_K` | 15 | 重排候选池大小 |
 | `REVIEW_ENABLED` | true | 是否开启专家审核 |
-| `REVIEW_REALTIME_ENABLED` | false | 实时审核（否则异步抽样） |
+| `REVIEW_REALTIME_ENABLED` | false | 实时审核（默认关闭；开启后高危/敏感回答阻塞待审，超 15s 自动转异步） |
 | `REVIEW_ASYNC_SAMPLE_RATE` | 0.05 | 异步抽样审核比例 |
 
 完整配置见 `.env.example`。
