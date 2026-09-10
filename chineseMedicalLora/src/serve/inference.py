@@ -119,6 +119,15 @@ class ModelManager:
             return cls._cache[model_key]
         with cls._lock:
             if model_key not in cls._cache:
+                # 单卡显存有限：切换模型前先释放另一个已缓存的模型，
+                # 避免微调前/后两份 7B 模型同时驻留导致 CUDA OOM
+                for old_key in list(cls._cache.keys()):
+                    if old_key != model_key:
+                        old_model = cls._cache.pop(old_key)[0]
+                        del old_model
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        print(f"[MODEL] 已释放模型缓存: {old_key}")
                 cls._cache[model_key] = cls._build(model_key)
             return cls._cache[model_key]
 

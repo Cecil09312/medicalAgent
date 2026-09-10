@@ -16,14 +16,15 @@
     </div>
 
     <div class="app">
-        <!-- 顶部栏：标题 + 模型切换 + 状态 + 清空 -->
+        <!-- 顶部栏：导航Tab + 标题 + 模型切换 + 状态 + 清空 -->
         <header class="app-header">
             <div class="header-left">
-                <div class="logo-circle" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" width="20" height="20">
-                        <path fill="currentColor" d="M19 8h-2V3H7v5H5c-1.1 0-2 .9-2 2v9c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-9c0-1.1-.9-2-2-2zm-9 10v-3H7v-2h3v-3h2v3h3v2h-3v3h-2zm0-10V5h4v3h-4z"/>
-                    </svg>
-                </div>
+                <!-- 功能导航 Tab -->
+                <nav class="nav-tabs" role="tablist" aria-label="功能导航">
+                    <button type="button" class="nav-tab active" data-view="chat" role="tab">智能问答</button>
+                    <button type="button" class="nav-tab" data-view="dataEval" role="tab">数据评估</button>
+                    <button type="button" class="nav-tab" data-view="bleuEval" role="tab">模型评估</button>
+                </nav>
                 <h1 class="app-title">中文医疗问答助手</h1>
             </div>
             <div class="header-right">
@@ -44,6 +45,8 @@
             </div>
         </header>
 
+        <!-- 视图：智能问答 -->
+        <section class="view active" id="view-chat">
         <!-- 聊天区域 -->
         <main class="chat-area" id="chatArea">
             <!-- 欢迎页（首次进入 / 清空后展示） -->
@@ -89,8 +92,96 @@
             </div>
             <p class="input-hint">内容由 AI 生成，仅供参考，不能替代医生诊断。</p>
         </footer>
+        </section>
+
+        <!-- 视图：数据评估 -->
+        <section class="view" id="view-dataEval">
+            <div class="eval-page">
+                <div class="eval-toolbar">
+                    <label class="eval-label" for="dataFileSelect">数据文件</label>
+                    <select id="dataFileSelect" class="eval-select">
+                        <option value="">加载中…</option>
+                    </select>
+                    <label class="eval-label" for="dataSampleSize">抽样条数</label>
+                    <input type="number" id="dataSampleSize" class="eval-input" min="10" step="10" placeholder="全量">
+                    <button type="button" class="eval-run-btn" id="dataEvalBtn">开始评估</button>
+                    <button type="button" class="eval-history-btn" id="dataHistoryBtn">历史报告</button>
+                </div>
+                <div class="eval-history-panel hidden" id="dataHistoryPanel">
+                    <h3>历史报告</h3>
+                    <div class="history-list" id="dataHistoryList"></div>
+                </div>
+                <div class="eval-loading hidden" id="dataEvalLoading">
+                    <span class="spinner"></span> 正在评估数据质量，请稍候…
+                </div>
+                <div class="eval-error hidden" id="dataEvalError"></div>
+                <div class="eval-result hidden" id="dataEvalResult">
+                    <div class="score-cards" id="dataScoreCards"></div>
+                    <div class="chart-grid">
+                        <div class="chart-card"><h3>质量评分（按维度）</h3><div class="chart" id="chartDataScores"></div></div>
+                        <div class="chart-card"><h3>类别分布</h3><div class="chart" id="chartCategory"></div></div>
+                        <div class="chart-card"><h3>问题 / 回答长度统计</h3><div class="chart" id="chartLength"></div></div>
+                        <div class="chart-card"><h3>语言分布</h3><div class="chart" id="chartLanguage"></div></div>
+                    </div>
+                    <div class="table-card">
+                        <h3>详细指标</h3>
+                        <div class="table-scroll">
+                            <table class="eval-table" id="dataDetailTable"></table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 视图：模型评估（BLEU） -->
+        <section class="view" id="view-bleuEval">
+            <div class="eval-page">
+                <div class="eval-toolbar">
+                    <div class="mode-switch" role="group" aria-label="评估模式">
+                        <button type="button" class="mode-btn active" data-mode="manual">手动输入对比</button>
+                        <button type="button" class="mode-btn" data-mode="inference">调用模型生成</button>
+                    </div>
+                    <div class="mode-config hidden" id="bleuModelConfig">
+                        <label class="eval-label" for="bleuModelSelect">模型</label>
+                        <select id="bleuModelSelect" class="eval-select">
+                            <option value="merged">微调后</option>
+                            <option value="base">微调前</option>
+                        </select>
+                    </div>
+                    <button type="button" class="eval-run-btn" id="bleuEvalBtn">开始评估</button>
+                    <button type="button" class="eval-history-btn" id="bleuHistoryBtn">历史报告</button>
+                </div>
+                <div class="eval-history-panel hidden" id="bleuHistoryPanel">
+                    <h3>历史报告</h3>
+                    <div class="history-list" id="bleuHistoryList"></div>
+                </div>
+                <p class="eval-tip" id="bleuModeTip">粘贴或输入「参考答案 + 模型回答」文本对，系统将计算 BLEU 分数评估模型输出质量。</p>
+                <div class="pairs-box" id="bleuPairsBox"></div>
+                <div class="pairs-actions">
+                    <button type="button" class="eval-add-btn" id="bleuAddPairBtn">+ 添加一组</button>
+                </div>
+                <div class="eval-loading hidden" id="bleuEvalLoading">
+                    <span class="spinner"></span> 正在评估（调用模型生成时耗时较长），请稍候…
+                </div>
+                <div class="eval-error hidden" id="bleuEvalError"></div>
+                <div class="eval-result hidden" id="bleuEvalResult">
+                    <div class="score-cards" id="bleuScoreCards"></div>
+                    <div class="chart-grid">
+                        <div class="chart-card"><h3>各阶 n-gram 精度（首条样本）</h3><div class="chart" id="chartBleuNgram"></div></div>
+                        <div class="chart-card"><h3>逐条样本 BLEU 分数</h3><div class="chart" id="chartBleuPerPair"></div></div>
+                    </div>
+                    <div class="table-card">
+                        <h3>样本明细</h3>
+                        <div class="table-scroll">
+                            <table class="eval-table" id="bleuDetailTable"></table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
     </div>
 
+    <script src="echarts.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

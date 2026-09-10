@@ -14,7 +14,7 @@ torchaudio==2.5.1
 # 勿装/勿保留 torchao（≥0.17 需要 torch.int1，与 2.5.1 不兼容）；本项目 QLoRA 用 bitsandbytes
 # Unsloth 需匹配本地 CUDA；若装失败可改为 git 源:
 #   pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-unsloth>=2025.1.0,<2026.8.0
+unsloth==2026.9.3
 trl>=0.12.0,<0.25.0
 peft>=0.13.0,<0.20.0
 transformers>=4.45.0,<5.0.0
@@ -32,4 +32,8 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 pydantic>=2.5.0
 
-# 前端依赖 marked.js 用 CDN 引入，无需 pip。
+# ---- 评估 ----
+# BLEU 评估的中文分词（src/bleu_evaluation.py / src/serve/evaluation_api.py）
+jieba>=0.42.1
+
+# 前端依赖：echarts.min.js 已本地化到 src/serve/static/，无需额外安装。

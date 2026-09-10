@@ -34,7 +34,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import iterate_in_threadpool
 
+from fastapi import HTTPException
+
 from .inference import model_availability, stream_chat
+from . import evaluation_api
 
 app = FastAPI(title="chineseMedicalLora 中文医疗问答服务")
 
@@ -129,6 +132,73 @@ async def chat_stream(req: ChatRequest):
             "X-Accel-Buffering": "no",  # 禁止 Nginx 缓冲，保证逐字下发
         },
     )
+
+
+# ---- 评估功能：数据质量 + BLEU 模型评估 ----
+
+class DataEvalRequest(BaseModel):
+    file_path: str = Field(..., description="datasets/ 下的相对路径")
+    sample_size: int | None = Field(default=None, ge=10, description="抽样条数，空=全量")
+
+
+class BleuPair(BaseModel):
+    question: str = ""
+    reference: str = Field(..., description="参考答案（标准答案）")
+    candidate: str = Field(default="", description="模型回答（手动模式必填）")
+
+
+class BleuEvalRequest(BaseModel):
+    pairs: list[BleuPair] = Field(..., min_length=1)
+    use_inference: bool = Field(default=False, description="true=调用推理模型生成回答")
+    model: str = Field(default="merged", pattern="^(merged|base)$")
+
+
+@app.get("/api/evaluate/data/files")
+def eval_data_files():
+    """列出 datasets/ 下可评估的数据文件。"""
+    return {"files": evaluation_api.list_data_files()}
+
+
+@app.post("/api/evaluate/data")
+def eval_data(req: DataEvalRequest):
+    """数据质量评估（同步路由在线程池执行，不阻塞事件循环）。"""
+    try:
+        report = evaluation_api.run_data_quality(req.file_path, req.sample_size)
+        return report
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/evaluate/bleu")
+def eval_bleu(req: BleuEvalRequest):
+    """BLEU 模型评估：手动文本对 或 调用推理生成后评估。"""
+    try:
+        return evaluation_api.run_bleu_evaluation(
+            [p.model_dump() for p in req.pairs],
+            use_inference=req.use_inference,
+            model=req.model,
+        )
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/evaluate/history")
+def eval_history():
+    """历史评估报告列表。"""
+    return {"reports": evaluation_api.list_reports()}
+
+
+@app.get("/api/evaluate/report/{filename}")
+def eval_report(filename: str):
+    """加载指定历史报告。"""
+    try:
+        return evaluation_api.load_report(filename)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ---- 静态前端（必须最后挂载，否则会吞掉 API 路由） ----
